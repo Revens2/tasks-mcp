@@ -9,6 +9,7 @@ User=tasks-app
 Group=tasks-app
 WorkingDirectory=/srv/tasks
 EnvironmentFile=/srv/tasks/secrets/tasks.env
+Environment=PYTHONPATH=/srv/tasks/src
 ExecStart=/srv/tasks/venv/bin/python -m tasks_gateway.server
 Restart=always
 RestartSec=3

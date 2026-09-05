@@ -12,7 +12,7 @@ name: tasks
 
 services:
   radicale:
-    image: tomsquest/docker-radicale:3.8.0.0@sha256:DIGEST_A_REMPLACER
+    image: tomsquest/docker-radicale:3.8.0.0@sha256:d311a35c91acb341c509fa8c692bd280720a6c3e73aa5d9a743453eeed4341c3
     container_name: radicale-tasks
     restart: unless-stopped
     init: true
@@ -32,7 +32,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    pids_limit: 100
     deploy:
       resources:
         limits:

@@ -15,8 +15,16 @@ umask 077
 
 # Copie staging (source cohérente sans arrêter Radicale : les écritures sont atomiques
 # au niveau fichier ; la copie rsync + tar est le meilleur compromis sans downtime).
-rsync -a --delete "$RACINE/radicale/data/" "$STAGING/collections/" 2>/dev/null \
-    || cp -a "$RACINE/radicale/data/." "$STAGING/collections/"
+# .Radicale.cache / .Radicale.lock sont des artefacts runtime : exclus (Radicale les
+# reconstruit ; les restaurer produirait des caches périmés).
+rsync -a --delete \
+    --exclude '.Radicale.cache' --exclude '.Radicale.lock' \
+    "$RACINE/radicale/data/" "$STAGING/collections/" 2>/dev/null \
+    || {
+        mkdir -p "$STAGING/collections"
+        cp -a "$RACINE/radicale/data/." "$STAGING/collections/"
+        find "$STAGING/collections" -name '.Radicale.cache' -o -name '.Radicale.lock' | xargs -r rm -rf
+    }
 
 mkdir -p "$STAGING/config"
 cp -a "$RACINE/radicale/config/config" "$STAGING/config/config"

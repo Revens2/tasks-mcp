@@ -64,7 +64,9 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 - la purge ne doit pas empêcher le démarrage
         journal.warning("purge de la corbeille impossible au démarrage : %s", exc)
 
-    application = ActeurMiddleware(mcp.streamable_http_app)
+    # streamable_http_app() construit l'application ASGI (sans argument dans ce SDK) ;
+    # ActeurMiddleware l'enveloppe pour propager l'acteur depuis l'en-tête interne.
+    application = ActeurMiddleware(mcp.streamable_http_app())
     uvicorn.run(
         application,
         host="127.0.0.1",

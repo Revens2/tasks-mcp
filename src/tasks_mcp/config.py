@@ -31,7 +31,9 @@ class Config:
         if self._verrou is None:
             import threading
 
-            self._verrou = threading.Lock()
+            # RLock : modifier()/deplacer() tiennent le verrou tout en appelant
+            # trouver() -> synchroniser() qui le ré-acquièrent.
+            self._verrou = threading.RLock()
         return self._verrou
 
     @property

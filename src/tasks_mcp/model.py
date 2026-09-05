@@ -104,7 +104,9 @@ def _normaliser_diff(valeur: object) -> object:
 # --- moteur de recherche ----------------------------------------------------------------
 
 def _normaliser(texte: str) -> str:
-    return unicodedata.normalize("NFKD", texte).casefold()
+    """Casse + accents plats : NFKD puis retrait des marques combinantes (Mn)."""
+    normalise = unicodedata.normalize("NFKD", texte).casefold()
+    return "".join(c for c in normalise if not unicodedata.combining(c))
 
 
 def correspond(tache: Tache, requete: str, champs: tuple[str, ...]) -> bool:

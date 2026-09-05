@@ -94,6 +94,7 @@ class Magasin:
         if self._connexion is None:
             self._chemin.parent.mkdir(parents=True, exist_ok=True)
             self._connexion = sqlite3.connect(self._chemin, check_same_thread=False)
+            self._connexion.row_factory = sqlite3.Row
             self._connexion.execute("PRAGMA journal_mode=WAL")
             self._connexion.executescript(_SCHEMA)
         return self._connexion

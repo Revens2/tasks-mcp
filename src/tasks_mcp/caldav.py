@@ -61,6 +61,23 @@ def _texte_local(element: ET.Element) -> str | None:
     return " ".join(texte.split()) or None
 
 
+def _valeur_propriete(element: ET.Element) -> str:
+    """Valeur d'une propriété DAV : texte direct, href imbriqué, ou noms des enfants.
+
+    current-user-principal / calendar-home-set contiennent un <href> enfant ;
+    resourcetype contient des enfants (collection, calendar) sans texte direct.
+    """
+    direct = _texte_local(element)
+    if direct:
+        return direct
+    for enfant in element.iter():
+        if enfant.tag.split("}", 1)[-1].lower() == "href" and (enfant.text or "").strip():
+            return (enfant.text or "").strip()
+    noms = [c.tag.split("}", 1)[-1].lower() for c in element if isinstance(c.tag, str)]
+    return " ".join(n for n in noms if n)
+
+
+
 class CalDAV:
     def __init__(self, url: str, utilisateur: str, mot_de_passe: str, timeout: float = 30.0):
         self._base = url.rstrip("/")
@@ -120,31 +137,26 @@ class CalDAV:
                         if propnom == "prop":
                             for prop in propbloc:
                                 nomp = prop.tag.split("}", 1)[-1].lower()
-                                proprietes[nomp] = _texte_local(prop) or ""
+                                proprietes[nomp] = _valeur_propriete(prop)
                         elif propnom == "propstat":
                             continue
             resultat.append((href, statut, proprietes))
         return resultat
 
     def _corps_propfind(self, *proprietes: tuple[str, str]) -> bytes:
-        """Corps PROPFIND demandant des propriétés (namespace_local, nom)."""
-        defs: list[str] = []
-        demandes: list[str] = []
-        vus: set[str] = set()
+        """Corps PROPFIND demandant des propriétés (namespace_local, nom).
+
+        Les deux namespaces (DAV: et CalDAV:) sont TOUJOURS déclarés, même si la
+        requête n'utilise que l'un des deux : un préfixe non déclaré rend le corps
+        XML invalide et Radicale répond 400.
+        """
+        demandes = []
         for ns, nom in proprietes:
             prefixe = "D" if ns == DAV else "C"
-            nom_xml = f"{prefixe}:{nom}"
-            if (ns, nom) not in vus:
-                vus.add((ns, nom))
-                if ns == DAV:
-                    defs.append(f'xmlns:{prefixe}="{DAV}"')
-                else:
-                    defs.append(f'xmlns:{prefixe}="{CAL}"')
-                demandes.append(f"<{nom_xml}/>")
-        defs_unique = list(dict.fromkeys(defs))
+            demandes.append(f"<{prefixe}:{nom}/>")
         return (
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-            f"<D:propfind { ' '.join(defs_unique) }>"
+            f'<D:propfind xmlns:D="{DAV}" xmlns:C="{CAL}">'
             f"<D:prop>{''.join(demandes)}</D:prop></D:propfind>"
         ).encode("utf-8")
 
@@ -181,21 +193,46 @@ class CalDAV:
                 continue
             if "calendar" not in proprietes.get("resourcetype", ""):
                 continue
-            nom = proprietes.get("displayname") or decoder_segment(href)
+            # Radicale renvoie le chemin complet ("juliann/Inbox") comme displayname
+            # quand aucune valeur n'est stockée : dans ce cas on retombe sur le segment
+            # final du href. Un displayname propre (sans '/') reste prioritaire.
+            affiche = (proprietes.get("displayname") or "").strip()
+            if not affiche or "/" in affiche:
+                nom = decoder_segment(href)
+            else:
+                nom = affiche
             resultat.append(Collection(href=href if href.endswith("/") else href + "/", nom=nom))
         return resultat
 
     def creer_collection(self, nom: str) -> str:
-        """MKCOL d'une collection sous la maison de l'utilisateur. Retourne son href."""
+        """MKCOL d'une collection calendrier sous la maison. Retourne son href.
+
+        Radicale exige un corps MKCOL déclarant le resourcetype calendar (sans corps,
+        type UNKNOWN -> refus "missing rights W"). 405 = déjà existant (idempotent).
+        """
         maison = self.calendrier_maison()
         href = maison + encoder_segment(nom) + "/"
-        reponse = self._requete("MKCOL", href)
+        nom_xml = (
+            nom.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        )
+        corps = (
+            '<?xml version="1.0" encoding="utf-8" ?>'
+            '<C:mkcol xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">'
+            "<D:set><D:prop><D:resourcetype>"
+            "<D:collection/><C:calendar/>"
+            "</D:resourcetype>"
+            f"<D:displayname>{nom_xml}</D:displayname>"
+            "</D:prop></D:set></C:mkcol>"
+        )
+        reponse = self._requete("MKCOL", href, headers=_ENTETES_XML, content=corps.encode())
         if reponse.status_code in (201, 405):
             return href
-        if reponse.status_code == 409:
-            # parent manquant : on tente la maison puis on réessaie
-            self._requete("MKCOL", maison)
-            reponse = self._requete("MKCOL", href)
+        if reponse.status_code in (403, 409):
+            # La collection maison (/user/) peut ne pas exister encore (Radicale la
+            # crée au premier accès authentifié) : un PROPFIND la matérialise, puis on
+            # réessaie. Les deux requêtes sont sans effet de bord destructif.
+            self._requete("PROPFIND", maison, headers={**_ENTETES_XML, "Depth": "0"})
+            reponse = self._requete("MKCOL", href, headers=_ENTETES_XML, content=corps.encode())
             if reponse.status_code in (201, 405):
                 return href
         raise ErreurCalDAV(
