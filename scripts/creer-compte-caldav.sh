@@ -35,6 +35,11 @@ case "$REP" in
     *) echo "Le service tasks-mcp conserve son mot de passe actuel." ;;
 esac
 
-# Radicale relit le fichier au changement (cache sur mtime) ; on force un rechargement propre.
+# Radicale relit le fichier au changement (cache sur mtime) ; on force un rechargement
+# propre. tasks-mcp garde les identifiants en mémoire dans son client HTTP : restart
+# obligatoire pour reprendre le nouveau mot de passe (sinon 401 sur toutes ses requêtes).
 docker restart radicale-tasks >/dev/null
+if systemctl list-unit-files tasks-mcp.service >/dev/null 2>&1; then
+    systemctl restart tasks-mcp.service
+fi
 echo "OK : compte CalDAV 'juliann' mis à jour."
