@@ -36,24 +36,31 @@ def service(tmp_path):
         caldav_user=valeurs["TASKS_CALDAV_USER"],
         caldav_password=valeurs["TASKS_CALDAV_PASSWORD"],
         data_dir=tmp_path,
+        trash_list="ZZCorbeille",
     )
     caldav = CalDAV(config.caldav_url, config.caldav_user, config.caldav_password)
     magasin = Magasin(config.fichier_db)
     service = Service(caldav, magasin, config)
-    # listes de test propres
+    # listes de test propres (nom unique par test)
     suffixe = str(int(time.time()))
     liste = f"ZZTest-{suffixe}"
+    hrefs: list[str] = []
     for nom in (liste, "ZZCorbeille"):
         try:
-            service.caldav.creer_collection(nom)
+            hrefs.append(service.caldav.creer_collection(nom))
         except Exception:
             pass
     yield service, liste
-    # nettoyage
+    # nettoyage : tâches puis collections de test
     try:
         for tache in service.toutes(vue="toutes"):
             if tache.list in (liste, "ZZCorbeille"):
                 service.supprimer(tache.uid, permanent=True)
+        for href in hrefs:
+            try:
+                caldav._requete("DELETE", href)
+            except Exception:
+                pass
     except Exception:
         pass
     caldav.fermer()

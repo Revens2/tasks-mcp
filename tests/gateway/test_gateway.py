@@ -1,4 +1,4 @@
-"""Tests d'integration de la passerelle tasks (pattern vault-mcp).
+"""Tests de la passerelle tasks (pattern vault-mcp).
 
 Couvre le contrat que ChatGPT/claude.ai exigent :
 - decouverte (RFC 8414 + RFC 9728) ;
@@ -28,7 +28,7 @@ from starlette.routing import Route
 from tasks_gateway.app import construire_application
 from tasks_gateway.oauth import PORTEE, hacher_phrase
 
-EMETTEUR = "https://calendar.example.test"
+EMETTEUR = "https://tasks.example.test"
 JETON_STATIQUE = "j" * 40
 PHRASE = "phrase-de-test-2026"
 
@@ -284,7 +284,14 @@ def _serveur_stub() -> tuple[uvicorn.Server, str, object]:
     return serveur, f"http://127.0.0.1:{port}", socket_ecoute
 
 
-def test_proxy_initialize_et_filtrage(environ):
+def test_proxy_initialize_et_verbatim(environ):
+    """V1 tasks : aucun outil masqué (CRUD complet pour tout client authentifié).
+
+    Les outils annoncés par l'upstream passent tels quels ; le mécanisme de filtrage
+    reste disponible pour de futures politiques (lecture seule, interdiction de
+    suppression) mais n'est pas actif.
+    """
+
     async def _t():
         serveur, url, _socket_ecoute = _serveur_stub()
         try:
@@ -309,8 +316,9 @@ def test_proxy_initialize_et_filtrage(environ):
                 )
                 assert r.status_code == 200
                 outils = [t["name"] for t in r.json()["result"]["tools"]]
+                # aucun outil retiré en V1
+                assert "manage-accounts" in outils
                 assert "list-events" in outils
-                assert "manage-accounts" not in outils
 
                 # call_tool passe verbatim
                 r = await c.post(
