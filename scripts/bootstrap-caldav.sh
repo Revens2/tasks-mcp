@@ -39,7 +39,7 @@ printf '%s' "tasks:lecture tasks:ecriture" | env_set "$ENV_FICHIER" "TASKS_MCP_T
 printf '%s' "/srv/tasks/data/oauth" | env_set "$ENV_FICHIER" "TASKS_MCP_OAUTH_DIR"
 # Issuer : URL publique FUTURE (phase 2 duckdns). Inerte tant que la passerelle n'est
 # pas exposée publiquement ; il doit alors être aligné sur l'URL réelle.
-printf '%s' "https://tasks-vps.duckdns.org" | env_set "$ENV_FICHIER" "TASKS_MCP_ISSUER"
+printf '%s' "https://tasks-mcp.duckdns.org" | env_set "$ENV_FICHIER" "TASKS_MCP_ISSUER"
 printf '%s' "" | env_set "$ENV_FICHIER" "TASKS_MCP_CONSENT_HASH"
 
 chown tasks-app:tasks-app "$ENV_FICHIER"
