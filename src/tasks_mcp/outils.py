@@ -56,6 +56,27 @@ def _depuis_parametres(since: str | None = None, hours: int | None = None) -> st
     return None
 
 
+def _garde_terminee(uid: str, actuelle: Tache, inclure_terminee: bool) -> dict | None:
+    """Politique V1 : ne pas modifier une tâche déjà terminée (rappel coché).
+
+    Refus par défaut ; la tâche doit d'abord être rouverte (tasks_reopen) ou
+    l'appelant doit explicitement passer `inclure_terminee=true` (ex. corriger
+    une archive). Renvoie un dict d'erreur, ou None si la modification est permise.
+    """
+    if actuelle.completed and not inclure_terminee:
+        return {
+            "erreur": "tache_terminee",
+            "message": (
+                "tâche déjà terminée : modification refusée (évite de modifier un "
+                "rappel coché, invisible côté iPhone). Rouvrez-la avec tasks_reopen "
+                "ou passez inclure_terminee=true si la modification est voulue."
+            ),
+            "uid": uid,
+            "tache_actuelle": _json_tache(actuelle),
+        }
+    return None
+
+
 def _erreur(exc: Exception) -> dict:
     if isinstance(exc, ConflitModification):
         return {
@@ -180,13 +201,20 @@ def enregistrer(mcp, service: Service) -> None:
         clear_due: Annotated[bool, J(description="Enlever l'échéance.")] = False,
         clear_start: Annotated[bool, J(description="Enlever le début.")] = False,
         clear_priority: Annotated[bool, J(description="Enlever la priorité.")] = False,
+        inclure_terminee: Annotated[
+            bool,
+            J(description="Autoriser la modification d'une tâche déjà terminée. "
+                          "False (défaut) : refusée tant que la tâche n'est pas rouverte "
+                          "(tasks_reopen)."),
+        ] = False,
         etag_attendu: Annotated[
             Optional[str],
             J(description="ETag de la version que vous avez lue : si la tâche a changé "
                           "entre-temps (iPhone), la modification est refusée sans écrasement."),
         ] = None,
     ) -> dict:
-        """Modifie une tâche. Écriture conditionnelle If-Match ; jamais d'écrasement silencieux."""
+        """Modifie une tâche. Refuse par défaut les tâches déjà terminées.
+        Écriture conditionnelle If-Match ; jamais d'écrasement silencieux."""
         try:
             changements: dict = {}
             if title is not None:
@@ -217,6 +245,10 @@ def enregistrer(mcp, service: Service) -> None:
                 changements["priority"] = int(priority)
             if not changements:
                 return {"erreur": "aucun_changement", "message": "rien à modifier"}
+            actuelle = service.trouver(uid)
+            refus = _garde_terminee(uid, actuelle, inclure_terminee)
+            if refus is not None:
+                return refus
             tache, diffs = service.modifier(uid, etag_attendu=etag_attendu, **changements)
             return {"tache": _json_tache(tache), "modifications": diffs}
         except Exception as exc:  # noqa: BLE001
