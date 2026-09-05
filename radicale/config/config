@@ -1,0 +1,28 @@
+# Radicale 3.8 — configuration stack tasks (montée en /config/config, lecture seule).
+# TLS et exposition sont gérés par nginx hôte (boucle locale) ; ce fichier ne contient
+# aucun secret (le fichier /config/users porte les empreintes bcrypt).
+
+[server]
+# Écoute dans le conteneur ; la publication docker est limitée à 127.0.0.1:5232.
+hosts = 0.0.0.0:5232
+max_connections = 50
+
+[auth]
+type = htpasswd
+htpasswd_filename = /config/users
+# Empreintes bcrypt (seul algorithme accepté ici ; pas de plain/md5).
+htpasswd_encryption = bcrypt
+realm = Tasks CalDAV
+# Délai anti-force-brute (ne s'applique qu'aux échecs).
+delay = 1
+
+[storage]
+filesystem_folder = /data/collections
+max_sync_token_age = 2592000
+
+[rights]
+# Chaque utilisateur ne lit/écrit que ses propres collections (/<login>/...).
+type = owner_only
+
+[logging]
+level = warning

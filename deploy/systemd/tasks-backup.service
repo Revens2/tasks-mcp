@@ -1,0 +1,13 @@
+[Unit]
+Description=Sauvegarde quotidienne de la stack tasks (Radicale + SQLite + OAuth)
+After=network-online.target radicale-tasks.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tasks_backup.sh
+# Notification Telegram en cas d'echec (convention machine).
+OnFailure=notify-failure@%n.service
+
+[Install]
+WantedBy=multi-user.target

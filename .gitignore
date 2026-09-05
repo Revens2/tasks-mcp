@@ -1,0 +1,28 @@
+# Secrets et état — jamais versionnés
+secrets/
+pki/
+*.env
+.env
+radicale/config/users
+radicale/data/
+data/
+backups/
+*.log
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Éditeurs / OS
+*.swp
+.DS_Store
+Thumbs.db
+
+# Artefacts de validation
+tests/.results/
