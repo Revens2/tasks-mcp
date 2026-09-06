@@ -1,0 +1,48 @@
+[Unit]
+Description=Tasks MCP upstream (CalDAV Radicale) -- compte dedie, isole
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=tasks-app
+Group=tasks-app
+WorkingDirectory=/srv/tasks
+EnvironmentFile=/srv/tasks/secrets/tasks.env
+Environment=PYTHONPATH=/srv/tasks/src
+ExecStart=/srv/tasks/venv/bin/python -m tasks_mcp.server
+Restart=always
+RestartSec=3
+
+# --- Isolation (calque sur vault-mcp.service) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Boucle locale uniquement : la passerelle (8792/nginx) est le seul point d'entree.
+IPAddressAllow=localhost
+IPAddressDeny=any
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+# Seules la base SQLite et les pieces jointes (miroir/snapshots) sont en ecriture.
+ReadWritePaths=/srv/tasks/data
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

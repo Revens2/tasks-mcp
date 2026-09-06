@@ -1,0 +1,48 @@
+[Unit]
+Description=Tasks MCP auth gateway (OAuth colocalise + proxy upstream)
+After=network-online.target tasks-mcp.service
+Wants=network-online.target
+Requires=tasks-mcp.service
+
+[Service]
+User=tasks-app
+Group=tasks-app
+WorkingDirectory=/srv/tasks
+EnvironmentFile=/srv/tasks/secrets/tasks.env
+Environment=PYTHONPATH=/srv/tasks/src
+ExecStart=/srv/tasks/venv/bin/python -m tasks_gateway.server
+Restart=always
+RestartSec=3
+
+# --- Isolation (calque sur calendar-mcp-gateway.service) ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressAllow=localhost 198.51.100.10
+IPAddressDeny=any
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+# Seul l'etat OAuth est ecrit (registre clients, jetons, consentements).
+ReadWritePaths=/srv/tasks/data
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

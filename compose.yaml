@@ -1,0 +1,50 @@
+# Radicale (CalDAV/VTODO) — stack tasks (mission « Apple Rappels <-> ChatGPT »).
+# Déploiement : /srv/tasks (dépôt git), conteneur unique.
+#
+# Sécurité (conventions machine, cf. vaultwarden/compose.yml) :
+#   - publication UNIQUEMENT sur 127.0.0.1:5232 (nginx hôte = seul point d'entrée) ;
+#   - image épinglée par TAG stable + DIGEST (mis à jour au premier déploiement) ;
+#   - conteneur read-only, non-root (uid/gid 2999 = compte système `radicale` côté hôte),
+#     cap_drop ALL, no-new-privileges, limites pid/mémoire, healthcheck.
+# Aucun port n'est ouvert sur NetBird ni sur l'Internet par ce service.
+
+name: tasks
+
+services:
+  radicale:
+    image: tomsquest/docker-radicale:3.8.0.0@sha256:d311a35c91acb341c509fa8c692bd280720a6c3e73aa5d9a743453eeed4341c3
+    container_name: radicale-tasks
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "2999:2999"
+    environment:
+      # Les fichiers /data et /config sont pré-possédés côté hôte par uid/gid 2999 :
+      # l'entrée du conteneur ne doit rien réparer.
+      TAKE_FILE_OWNERSHIP: "false"
+      TZ: "Europe/Paris"
+    ports:
+      - "127.0.0.1:5232:5232"
+    volumes:
+      - ./radicale/config:/config:ro
+      - ./radicale/data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:5232/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

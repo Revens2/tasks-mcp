@@ -1,0 +1,10 @@
+[Unit]
+Description=Minuteur de sauvegarde quotidienne de la stack tasks
+
+[Timer]
+OnCalendar=*-*-* 03:10:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
