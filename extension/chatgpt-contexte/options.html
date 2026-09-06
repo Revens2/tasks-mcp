@@ -4,14 +4,17 @@
     <meta charset="utf-8" />
     <title>Contexte ChatGPT → Tasks MCP</title>
     <style>
-      body { font-family: system-ui, sans-serif; font-size: 13px; margin: 0; padding: 12px; width: 340px; }
+      body { font-family: system-ui, sans-serif; font-size: 13px; margin: 0; padding: 12px; width: 360px; }
       h1 { font-size: 14px; margin: 0 0 8px; }
       label { display: block; margin: 8px 0 2px; font-weight: 600; }
       input { width: 100%; box-sizing: border-box; padding: 4px 6px; }
-      .boutons { margin-top: 12px; display: flex; gap: 8px; }
-      button { padding: 5px 10px; }
-      #statut { margin-top: 10px; white-space: pre-wrap; color: #444; font-size: 12px; }
-      .aide { color: #777; font-size: 11px; margin-top: 10px; line-height: 1.4; }
+      .boutons { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+      .boutons button { padding: 6px 10px; }
+      #tests { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+      #tests button { flex: 1; min-width: 160px; }
+      #statut { margin-top: 10px; white-space: pre-wrap; font-size: 12px; line-height: 1.45; }
+      #vue { margin-top: 10px; white-space: pre-wrap; font-size: 12px; line-height: 1.5; background: #f6f8fa; border: 1px solid #e2e4e8; border-radius: 6px; padding: 8px; }
+      .aide { color: #777; font-size: 11px; margin-top: 10px; line-height: 1.45; }
       code { background: #f0f0f0; padding: 0 3px; }
     </style>
   </head>
@@ -20,26 +23,40 @@
 
     <label for="endpoint">Endpoint</label>
     <input id="endpoint" type="url" spellcheck="false"
-      placeholder="https://mcp.example.org/context/chatgpt" />
+      placeholder="https://tasks-mcp.duckdns.org/context/chatgpt" />
 
     <label for="jeton">Jeton (browser context writer)</label>
     <input id="jeton" type="password" autocomplete="off" spellcheck="false" />
 
     <div class="boutons">
       <button id="enregistrer" type="button">Enregistrer</button>
-      <button id="tester" type="button">Tester la connexion</button>
+    </div>
+
+    <div id="tests">
+      <button id="tester-serveur" type="button">Tester le serveur</button>
+      <button id="tester-conversation" type="button">Tester la conversation courante</button>
     </div>
 
     <div id="statut"></div>
+    <div id="vue"></div>
 
     <div class="aide">
-      L'extension publie l'URL de la conversation active (onglet visible sur
-      <code>chatgpt.com/c/…</code>) vers votre Tasks MCP. Elle ne lit jamais le
-      contenu des conversations et ne stocke aucune URL. Voir
-      <code>docs/CONTEXTE-CHATGPT.md</code> du dépôt tasks-mcp pour créer le
-      jeton (<code>rotation-jeton-contexte-chatgpt.sh</code>).
+      <b>Deux tests différents :</b><br />
+      • <b>Tester le serveur</b> : transport + authentification uniquement (l'endpoint répond-il ? le jeton est-il accepté ?).<br />
+      • <b>Tester la conversation courante</b> : pipeline complet — l'onglet actif
+      doit être une conversation <code>chatgpt.com/c/…</code> ; l'URL réelle est
+      envoyée puis le stockage est confirmé. Un serveur accessible n'implique
+      <b>pas</b> qu'une conversation soit détectée.<br /><br />
+      La conversation référencée est celle du <b>dernier onglet conversation
+      activé</b>, rafraîchie automatiquement (heartbeat ~45 s) tant que cet
+      onglet reste ouvert sur <code>/c/…</code> — même en arrière-plan. Une page
+      ChatGPT sans conversation (accueil…) n'efface jamais ce contexte.
+      L'extension ne lit que l'URL et le titre des onglets <code>chatgpt.com</code>
+      (jamais le contenu) et ne stocke aucune URL. Voir
+      <code>docs/CONTEXTE-CHATGPT.md</code> du dépôt tasks-mcp.
     </div>
 
+    <script src="detect.js"></script>
     <script src="options.js"></script>
   </body>
 </html>

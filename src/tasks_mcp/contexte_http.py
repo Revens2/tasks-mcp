@@ -1,9 +1,14 @@
-"""Endpoint HTTP `POST /context/chatgpt` (servi par tasks-mcp, jamais par /mcp).
+"""Endpoint HTTP `/context/chatgpt` (servi par tasks-mcp, jamais par /mcp).
 
 L'extension navigateur locale y publie l'URL de la conversation ChatGPT active.
 L'endpoint vit DANS le processus tasks-mcp (127.0.0.1:8791) : le registre
 mémoire qu'il alimente est exactement celui que lit `tasks_create` — aucune
 synchronisation inter-processus, aucune route ajoutée à la passerelle OAuth.
+
+Méthodes :
+- `POST` : dépose le contexte d'une conversation (réponse explicite
+  `conversation_detectee` / `id_present`) ou efface (`{"actif": false}`) ;
+- `GET` : diagnostic interne (contexte présent + âge, jamais l'URL ni l'ID).
 
 Sécurité :
 - jeton dédié `TASKS_CONTEXT_TOKEN` (ultra-scopé : il ne donne AUCUN droit MCP,
@@ -13,8 +18,9 @@ Sécurité :
 - validation stricte dans contexte.valider_url / contexte_depuis_payload
   (https://chatgpt.com/c/<id> uniquement, jamais /share/, jamais un autre
   hôte, jamais de query…) ;
-- `{"actif": false}` efface le contexte du client (l'onglet a quitté une
-  conversation) → évite les mauvaises associations ;
+- par défaut la réponse n'écho PAS l'ID de conversation (diagnostic : seuls
+  les booléens `conversation_detectee` / `id_present`) ; l'écho n'est activé
+  qu'en débogage explicite (`echo_id=True`) et n'est jamais loggé ;
 - aucun log du corps : ni URL, ni identifiant de conversation.
 """
 
@@ -58,13 +64,14 @@ class _Limiteur:
 
 
 class ContexteEndpoint:
-    """Gestionnaire ASGI de `POST /context/chatgpt`."""
+    """Gestionnaire ASGI de `GET|POST /context/chatgpt`."""
 
     def __init__(
         self,
         jeton: str,
         ttl_s: int = 300,
         registre: RegistreContexte | None = None,
+        echo_id: bool = False,
         limite_jeton: int = 30,
         limite_ip: int = 120,
         fenetre_s: float = 60.0,
@@ -72,6 +79,7 @@ class ContexteEndpoint:
         self.jeton = (jeton or "").strip()
         self.ttl_s = max(1, int(ttl_s))
         self.registre = registre or RegistreContexte()
+        self.echo_id = bool(echo_id)
         self._actif = bool(self.jeton)
         self._jeton_empreinte = hashlib.sha256(self.jeton.encode()).hexdigest()
         self._limites = {
@@ -140,12 +148,13 @@ class ContexteEndpoint:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             return
-        if scope["method"] != "POST":
+        methode = scope["method"]
+        if methode not in ("GET", "POST"):
             await send(
                 {
                     "type": "http.response.start",
                     "status": 405,
-                    "headers": [(b"allow", b"POST")],
+                    "headers": [(b"allow", b"GET, POST")],
                 }
             )
             await send({"type": "http.response.body", "body": b"", "more_body": False})
@@ -154,14 +163,17 @@ class ContexteEndpoint:
             # Endpoint non configuré (pas de TASKS_CONTEXT_TOKEN) : inerte.
             await self._repondre(send, 503, {"erreur": "non_configure"})
             return
-        if not self._type_json(scope):
-            await self._repondre(send, 415, {"erreur": "type_media_invalide"})
-            return
-        try:
-            corps = await self._lire_corps(receive)
-        except ValueError:
-            await self._repondre(send, 413, {"erreur": "corps_trop_gros"})
-            return
+        if methode == "POST":
+            if not self._type_json(scope):
+                await self._repondre(send, 415, {"erreur": "type_media_invalide"})
+                return
+            try:
+                corps = await self._lire_corps(receive)
+            except ValueError:
+                await self._repondre(send, 413, {"erreur": "corps_trop_gros"})
+                return
+        else:
+            corps = b""
         if not self._autorise(scope):
             # Même message pour jeton absent ou invalide (pas d'oracle).
             await self._repondre(send, 401, {"erreur": "non_autorise"})
@@ -172,6 +184,25 @@ class ContexteEndpoint:
             await self._repondre(send, 429, {"erreur": "trop_de_requetes"})
             return
 
+        if methode == "GET":
+            # Diagnostic interne : présence + âge + raison du contexte le plus
+            # récent. Jamais l'URL ni l'ID de conversation, aucun historique.
+            etat = self.registre.etat(ttl_s=self.ttl_s)
+            await self._repondre(
+                send,
+                200,
+                {
+                    "statut": "ok",
+                    "contexte_present": etat["contexte_present"],
+                    "id_present": etat["contexte_present"],
+                    "age_s": etat["age_s"],
+                    "raison": etat["raison"],
+                    "dernier_depot_s": etat["dernier_depot_s"],
+                    "ttl_s": self.ttl_s,
+                },
+            )
+            return
+
         try:
             payload = json.loads(corps.decode("utf-8")) if corps else None
         except (ValueError, UnicodeDecodeError):
@@ -179,8 +210,18 @@ class ContexteEndpoint:
             return
 
         if isinstance(payload, dict) and payload.get("actif") is False:
+            # Effacement SOUS CONDITION DE PROPRIÉTÉ : seul l'onglet qui a déposé
+            # le contexte peut l'effacer (onglet_id identique). Un onglet tiers
+            # (page ChatGPT sans conversation, accueil…) ne peut jamais effacer le
+            # contexte d'une conversation ouverte ailleurs — cause racine du bug
+            # « contexte effacé en boucle toutes les ~2 min ».
             client_id = payload.get("client_id")
-            retire = self.registre.effacer(client_id if isinstance(client_id, str) and client_id else None)
+            onglet_id = payload.get("onglet_id")
+            if not (isinstance(client_id, str) and client_id):
+                retire = 0
+            else:
+                oid = onglet_id if isinstance(onglet_id, str) and onglet_id else None
+                retire = self.registre.effacer(client_id, oid)
             await self._repondre(send, 200, {"statut": "ok", "efface": retire})
             return
 
@@ -191,7 +232,16 @@ class ContexteEndpoint:
             return
 
         self.registre.enregistrer(contexte)
-        await self._repondre(send, 200, {"statut": "ok", "ttl_s": self.ttl_s})
+        reponse: dict[str, Any] = {
+            "statut": "ok",
+            "conversation_detectee": True,
+            "id_present": True,
+            "ttl_s": self.ttl_s,
+        }
+        if self.echo_id:
+            # Débogage explicite uniquement (TASKS_CONTEXT_ECHO_ID=1).
+            reponse["conversation_id"] = contexte.conversation_id
+        await self._repondre(send, 200, reponse)
 
 
 def envelopper_application(interne: Callable, endpoint: ContexteEndpoint) -> Callable:

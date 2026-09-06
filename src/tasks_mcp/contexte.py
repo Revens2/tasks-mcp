@@ -33,12 +33,23 @@ TAILLE_MAX_CLIENT = 64
 TTL_DEFAUT_S = 300
 
 # Identifiant de conversation : chaîne bornée sans séparateur dangereux
-# (lettres/chiffres/tiret/souligné). Le chemin complet est vérifié plus bas.
-_MOTIF_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+# (lettres/chiffres/tiret/souligné), longueur 8..100 — les IDs réels ChatGPT
+# sont des UUID de 36 caractères ; aucune regex UUID stricte (risque de faux
+# négatifs sur d'anciens formats), mais un segment trop court est refusé.
+_MOTIF_ID = re.compile(r"^[A-Za-z0-9_-]{8,100}$")
 # client_id : même alphabet, envoyé par l'extension (UUID ou libellé court).
 _MOTIF_CLIENT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# onglet_id : identité de l'onglet navigateur qui dépose le contexte (id Chrome
+# numérique, ou « options » pour le bouton de test). Un effacement n'est accepté
+# que s'il vient du MÊME onglet que le dépôt (anti-effacement croisé entre
+# onglets — cause racine du bug « contexte effacé en boucle »).
+_MOTIF_ONGLET = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 HOTE_AUTORISE = "chatgpt.com"
 CHEMIN_CONVERSATION = "/c/"
+
+# Fenêtre pendant laquelle un contexte expiré est rapporté comme « expiré »
+# (raison du diagnostic) plutôt que « absent » (multiple du TTL).
+FENETRE_EXPIRE_MULTIPLE = 2
 
 
 class PayloadInvalide(ValueError):
@@ -62,6 +73,7 @@ class ContexteChatGPT:
     source: str = "chatgpt"
     titre: str | None = None
     client_id: str = "defaut"
+    onglet_id: str = ""  # onglet navigateur propriétaire (anti-effacement croisé)
     vu_le: datetime | None = None  # horodaté par le serveur à l'enregistrement
 
     def enregistree_a(self, maintenant: datetime) -> "ContexteChatGPT":
@@ -157,6 +169,12 @@ def _normaliser_client_id(brut: object) -> str:
     return brut
 
 
+def _normaliser_onglet_id(brut: object) -> str:
+    if not isinstance(brut, str) or not _MOTIF_ONGLET.match(brut):
+        return ""
+    return brut
+
+
 def contexte_depuis_payload(payload: object) -> ContexteChatGPT:
     """Contexte validé depuis le corps JSON reçu (dict).
 
@@ -169,6 +187,7 @@ def contexte_depuis_payload(payload: object) -> ContexteChatGPT:
     url = valider_url(payload.get("url"))
     titre = normaliser_titre(payload.get("title"))
     client_id = _normaliser_client_id(payload.get("client_id"))
+    onglet_id = _normaliser_onglet_id(payload.get("onglet_id"))
     # Extraire l'id depuis l'URL canonique (source unique de vérité).
     id_conversation = url.rsplit("/", 1)[1]
     return ContexteChatGPT(
@@ -176,6 +195,7 @@ def contexte_depuis_payload(payload: object) -> ContexteChatGPT:
         conversation_id=id_conversation,
         titre=titre,
         client_id=client_id,
+        onglet_id=onglet_id,
     )
 
 
@@ -190,30 +210,64 @@ class RegistreContexte:
     Conçu pour un processus unique (uvicorn worker unique du service
     tasks-mcp) : aucune persistance, aucune donnée de navigation conservée
     au-delà du TTL. Fil d'exécution protégé par un verrou.
+
+    Propriété : chaque contexte est déposé par UN onglet (`onglet_id`). Un
+    effacement n'est accepté que s'il provient du même onglet : une page
+    ChatGPT sans conversation (accueil…) ne peut donc JAMAIS effacer le
+    contexte d'une conversation ouverte dans un autre onglet.
     """
 
     def __init__(self) -> None:
         self._verrou = threading.Lock()
         self._par_client: dict[str, ContexteChatGPT] = {}
+        # Horodatages (unix) des dépôts par client, bornés : servent UNIQUEMENT
+        # au diagnostic (raison absent/expiré, âge du dernier dépôt) — aucune
+        # URL, aucun identifiant de conversation conservés ici.
+        self._derniers_depots: dict[str, float] = {}
+        self._max_depots_traces = 64
 
     def enregistrer(self, contexte: ContexteChatGPT, maintenant: datetime | None = None) -> None:
         avec_heure = contexte.enregistree_a(maintenant or datetime.now(timezone.utc))
         with self._verrou:
             self._par_client[avec_heure.client_id] = avec_heure
+            self._derniers_depots[avec_heure.client_id] = avec_heure.vu_le.timestamp()
+            if len(self._derniers_depots) > self._max_depots_traces:
+                # Éviction du plus ancien (dict ordonné par insertion).
+                self._derniers_depots.pop(next(iter(self._derniers_depots)))
 
-    def effacer(self, client_id: str | None = None) -> int:
-        """Efface le contexte d'un client (ou de tous si client_id est None).
+    def effacer(self, client_id: str | None = None, onglet_id: str | None = None) -> int:
+        """Efface le contexte d'un client, sous condition de propriété.
 
-        Retourne le nombre d'entrées retirées. Utilisé quand l'extension
-        constate que l'onglet actif a quitté une conversation.
+        - ``client_id`` est None → efface TOUT (usage interne uniquement,
+          jamais exposé par l'endpoint HTTP) ;
+        - sinon le contexte n'est retiré QUE si l'onglet demandeur est le
+          propriétaire du dépôt (``onglet_id`` identique à celui enregistré) ;
+        - un effacement sans ``onglet_id`` est refusé (0) lorsque le dépôt
+          porte un onglet, et accepté seulement pour un dépôt legacy sans
+          onglet — un onglet tiers ne peut jamais effacer le contexte d'un
+          autre onglet.
+
+        Retourne le nombre d'entrées retirées.
         """
         with self._verrou:
             if client_id is None:
                 n = len(self._par_client)
                 self._par_client.clear()
                 return n
-            n = 1 if self._par_client.pop(client_id, None) is not None else 0
-            return n
+            contexte = self._par_client.get(client_id)
+            if contexte is None:
+                return 0
+            if onglet_id is None:
+                # Dépôt legacy sans onglet → effacement legacy toléré ; dépôt
+                # porté par un onglet → refus (il faut l'onglet propriétaire).
+                if contexte.onglet_id:
+                    return 0
+                del self._par_client[client_id]
+                return 1
+            if contexte.onglet_id and contexte.onglet_id != onglet_id:
+                return 0
+            del self._par_client[client_id]
+            return 1
 
     def _purger(self, ttl_s: float, maintenant: datetime) -> None:
         limite = maintenant.timestamp() - max(0.0, ttl_s)
@@ -237,6 +291,64 @@ class RegistreContexte:
             if not self._par_client:
                 return None
             return max(self._par_client.values(), key=lambda c: c.vu_le.timestamp())
+
+    def _diagnostic(self, ttl_s: float, maintenant: datetime) -> dict:
+        """État du registre pour le diagnostic — jamais d'URL ni d'ID.
+
+        Retourne : contexte_present, age_s (contexte frais), raison
+        (contexte_actif | contexte_expire | contexte_absent) et
+        dernier_depot_s (âge du dernier dépôt reçu, toute source confondue).
+        """
+        maintenant = maintenant or datetime.now(timezone.utc)
+        ttl = max(0.0, float(ttl_s))
+        with self._verrou:
+            self._purger(ttl, maintenant)
+            maintenant_ts = maintenant.timestamp()
+            dernier_depot_ts = max(self._derniers_depots.values(), default=None)
+            dernier_depot_s = (
+                round(max(0.0, maintenant_ts - dernier_depot_ts), 1)
+                if dernier_depot_ts is not None else None
+            )
+            if self._par_client:
+                plus_recent = max(self._par_client.values(), key=lambda c: c.vu_le.timestamp())
+                age = max(0.0, maintenant_ts - plus_recent.vu_le.timestamp())
+                return {
+                    "contexte_present": True,
+                    "age_s": round(age, 1),
+                    "raison": "contexte_actif",
+                    "dernier_depot_s": dernier_depot_s,
+                }
+            if dernier_depot_s is not None and dernier_depot_s <= ttl * FENETRE_EXPIRE_MULTIPLE:
+                return {
+                    "contexte_present": False,
+                    "age_s": None,
+                    "raison": "contexte_expire",
+                    "dernier_depot_s": dernier_depot_s,
+                }
+            return {
+                "contexte_present": False,
+                "age_s": None,
+                "raison": "contexte_absent",
+                "dernier_depot_s": dernier_depot_s,
+            }
+
+    def etat(self, ttl_s: float = TTL_DEFAUT_S, maintenant: datetime | None = None) -> dict:
+        """Diagnostic interne (GET /context/chatgpt) : présence, âge et raison.
+
+        Ne renvoie NI l'URL NI l'ID de conversation, et aucun historique.
+        """
+        diag = self._diagnostic(ttl_s=ttl_s, maintenant=maintenant)
+        return {
+            "contexte_present": diag["contexte_present"],
+            "age_s": diag["age_s"],
+            "raison": diag["raison"],
+            "dernier_depot_s": diag["dernier_depot_s"],
+        }
+
+    def raison(self, ttl_s: float = TTL_DEFAUT_S, maintenant: datetime | None = None) -> str:
+        """Raison de l'absence d'un contexte frais, pour le journal interne :
+        ``contexte_actif``, ``contexte_expire`` ou ``contexte_absent``."""
+        return self._diagnostic(ttl_s=ttl_s, maintenant=maintenant)["raison"]
 
 
 # ---------------------------------------------------------------------------

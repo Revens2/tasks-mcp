@@ -13,7 +13,9 @@
 
   var HOTE = "chatgpt.com";
   var PREFIXE_CONVERSATION = "/c/";
-  var MOTIF_ID = /^[A-Za-z0-9_-]{1,100}$/;
+  // Longueur 8..100 (UUID réels = 36) : pas de regex UUID stricte (risque de
+  // faux négatifs), mais un segment trop court après /c/ est refusé.
+  var MOTIF_ID = /^[A-Za-z0-9_-]{8,100}$/;
   var TAILLE_MAX_TITRE = 200;
 
   /** URL https://chatgpt.com/c/<id> → {url, conversation_id}, sinon null. */
@@ -56,63 +58,15 @@
     return titre.slice(0, TAILLE_MAX_TITRE);
   }
 
-  /**
-   * Prochaine action à envoyer, ou null (rien à faire).
-   *
-   * @param etat  {dernierType:"contexte"|"efface"|null, dernierUrl:string|null,
-   *              dernierEnvoiA:number} — état précédent (muté par l'appelant
-   *              seulement quand l'envoi a RÉUSSI).
-   * @param entrees {href, titre, visible:boolean, maintenant:number(ms),
-   *              rafraichirApresMs?:number}
-   * @returns null | {type:"contexte", payload:{url, conversation_id, title}}
-   *                | {type:"efface"}
-   *
-   * Règles :
-   *  - onglet non visible → aucune action (pas de faux contexte) ;
-   *  - visible sur /c/<id> → contexte, immédiatement si l'URL change, puis
-   *    heartbeat périodique (rafraichirApresMs, défaut 120 s) ;
-   *  - visible sur une AUTRE page ChatGPT → « efface » (l'onglet a quitté une
-   *    conversation : ne pas associer une création de tâche à l'ancienne URL) ;
-   *  - visible sur autre chose (hors chatgpt.com, impossible ici) → rien.
-   */
-  function prochaineAction(etat, entrees) {
-    if (!entrees.visible) return null;
-    var maintenant = entrees.maintenant;
-    var conv = extraireConversation(entrees.href);
-    if (conv) {
-      if (
-        etat.dernierType === "contexte" &&
-        etat.dernierUrl === conv.url &&
-        maintenant - etat.dernierEnvoiA < (entrees.rafraichirApresMs || 120000)
-      ) {
-        return null; // déjà à jour, heartbeat pas encore dû
-      }
-      return {
-        type: "contexte",
-        payload: {
-          url: conv.url,
-          conversation_id: conv.conversation_id,
-          title: titrePage(entrees.titre),
-        },
-      };
-    }
-    if (estSurChatGPT(entrees.href)) {
-      if (
-        etat.dernierType === "efface" &&
-        maintenant - etat.dernierEnvoiA < (entrees.rafraichirApresMs || 120000)
-      ) {
-        return null;
-      }
-      return { type: "efface" };
-    }
-    return null;
-  }
+  // NB : la décision « quel onglet publie / efface » vit désormais dans
+  // cerveau.js (état propriétaire + heartbeat), PAS ici : ce fichier ne
+  // contient que le parsing/assainissement pur, partagé entre le worker et
+  // la page d'options.
 
   var api = {
     extraireConversation: extraireConversation,
     estSurChatGPT: estSurChatGPT,
     titrePage: titrePage,
-    prochaineAction: prochaineAction,
     HOTE: HOTE,
   };
   racine.DetectChatGPT = api;

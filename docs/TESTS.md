@@ -16,7 +16,8 @@ sudo -u tasks-app bash -c '
 '
 ```
 
-Résultat attendu : **23 passed** (4 intégration + unités MCP + passerelle).
+Résultat attendu : **140 passed** (intégration CalDAV réelle + unités MCP +
+passerelle).
 
 - `tests/mcp/` — unités : modèle de temps (Europe/Paris), conversion iCalendar↔Tache,
   contexte ChatGPT (validation URL/titre, registre TTL, bloc notes), endpoint HTTP
@@ -35,19 +36,24 @@ Résultat attendu : **23 passed** (4 intégration + unités MCP + passerelle).
 ## Tests de l'extension (node, poste de développement)
 
 ```bash
-node --test extension/tests/detect.test.cjs
+node --test extension/tests/detect.test.cjs extension/tests/cerveau.test.cjs
 ```
 
-Couvre la logique pure de détection : URL `/c/…` vs autres pages ChatGPT,
-détection initiale, navigation SPA, changement d'onglet (visibilité), heartbeat
-et effacement hors conversation.
+- `detect.test.cjs` — parsing pur : URL `/c/…` vs autres pages ChatGPT
+  (`share/`, `g/…`, autres hôtes…), titre assaini.
+- `cerveau.test.cjs` — logique du cerveau (onglet propriétaire) : activation →
+  propriétaire + enregistrement, bascule A → B → A sans inversion, heartbeat du
+  propriétaire (même en arrière-plan), anti-effacement croisé (une page SANS
+  conversation ne peut pas effacer le contexte d'une autre conversation),
+  fermeture/navigation de l'onglet propriétaire → effacement, onglet inactif qui
+  ne vole pas la propriété. Résultat : **25 tests** (19 cerveau + 6 parsing).
 
 ## Tests manuels déjà exécutés (déploiement réel)
 
 1. **CalDAV direct** : découverte principal/calendar-home-set, MKCOL Inbox/Corbeille
    (corps resourcetype calendar obligatoire chez Radicale), PROPFIND listes, auth 401.
 2. **CalDAV TLS NetBird depuis le PC** (pair NetBird) :
-   `https://netbird.internal.example:5232` — PROPFIND authentifié 207, listes
+   `https://vps-etude.netbird.selfhosted:5232` — PROPFIND authentifié 207, listes
    Inbox + Corbeille visibles, chaîne validée par la CA privée.
 3. **MCP streamable-http via nginx NetBird (:8793/mcp)** avec le SDK officiel :
    initialize → tools/list (16 outils) → tasks_create → tasks_get → tasks_update →

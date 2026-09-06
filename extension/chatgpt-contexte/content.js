@@ -1,100 +1,64 @@
 /**
- * Content script (https://chatgpt.com/*) — observateur de conversation.
+ * Content script (https://chatgpt.com/*) — observateur de navigation SPA.
  *
- * ChatGPT est une SPA : le changement de conversation modifie l'URL sans
- * recharger la page. On surveille donc :
- *  - un tick périodique léger (URL + titre + visibilité) ;
- *  - les transitions pushState/replaceState/popstate (navigation SPA) ;
- *  - le passage de l'onglet à l'état visible (changement d'onglet actif).
+ * V2 : ce script ne décide PLUS rien et n'effectue AUCUN appel réseau. Il ne
+ * fait que signaler au service worker les changements d'URL/titre que
+ * ChatGPT produit SANS recharger la page (pushState / replaceState /
+ * popstate), car le worker ne voit pas ces transitions.
  *
- * On n'envoie quelque chose que lorsque l'onglet est RÉELLEMENT visible, et
- * on ne lit que location.href et document.title — jamais le contenu.
+ * C'est le worker (background.js + cerveau.js) qui :
+ *  - choisit l'onglet propriétaire (dernière conversation réellement active) ;
+ *  - envoie les enregistrements + heartbeat périodique (alarme ~45 s) ;
+ *  - décide de l'effacement — jamais une page sans conversation ne peut
+ *    effacer le contexte d'une autre conversation (bug corrigé).
  *
- * Les envois passent par le service worker (background.js), qui possède le
- * jeton et l'endpoint : le content script n'a accès à aucun secret.
+ * On ne lit que location.href et document.title — jamais le contenu. Les
+ * envois passent par chrome.runtime.sendMessage ; le content script ne voit
+ * aucun secret (jeton/endpoint restent dans le worker).
  */
 (function () {
   "use strict";
 
-  var Detect = globalThis.DetectChatGPT;
-  if (!Detect) {
-    console.error("[contexte-chatgpt] detect.js absent");
-    return;
-  }
+  var dernierUrl = null;
 
-  // Fenêtre de silence après un échec réseau (évite de marteler l'endpoint).
-  var APRES_ECHEC_MS = 15000;
-  var TICK_MS = 2000;
-
-  var etat = { dernierType: null, dernierUrl: null, dernierEnvoiA: 0 };
-  var derniereTentativeA = 0;
-  var enVol = false;
-
-  function envoyer(action) {
-    if (enVol) return;
-    enVol = true;
-    var message =
-      action.type === "contexte"
-        ? { type: "contexte", payload: action.payload }
-        : { type: "efface" };
-    chrome.runtime
-      .sendMessage(message)
-      .then(function (reponse) {
-        if (reponse && reponse.ok) {
-          // L'envoi a réussi : on peut mémoriser l'état (pas avant, sinon on
-          // ne retenterait jamais après un échec réseau transitoire).
-          if (action.type === "contexte") {
-            etat.dernierType = "contexte";
-            etat.dernierUrl = action.payload.url;
-          } else {
-            etat.dernierType = "efface";
-            etat.dernierUrl = null;
-          }
-          etat.dernierEnvoiA = Date.now();
-        } else {
-          derniereTentativeA = Date.now();
-        }
-      })
-      .catch(function () {
-        derniereTentativeA = Date.now();
-      })
-      .finally(function () {
-        enVol = false;
-      });
-  }
-
-  function verifier() {
-    var maintenant = Date.now();
-    if (maintenant - derniereTentativeA < APRES_ECHEC_MS) {
-      return; // échec récent : on laisse passer un peu de temps
-    }
-    var action = Detect.prochaineAction(etat, {
-      href: location.href,
-      titre: document.title,
-      visible: document.visibilityState === "visible",
-      maintenant: maintenant,
+  function signaler() {
+    var url = location.href;
+    if (url === dernierUrl) return; // aucun changement réel : rien à dire
+    dernierUrl = url;
+    chrome.runtime.sendMessage({
+      type: "url_onglet",
+      url: url,
+      titre: document.title || null,
+    }).catch(function () {
+      /* worker indisponible (ex. extension rechargée) : l'événement suivant
+         ou l'alarme reprendra la main ; rien à corriger ici. */
     });
-    if (action) {
-      derniereTentativeA = maintenant;
-      envoyer(action);
-    }
   }
 
-  // Navigation SPA (history) : vérification immédiate.
+  // Navigation SPA (history) : signalement immédiat après la transition.
   ["pushState", "replaceState"].forEach(function (nom) {
     var origine = history[nom];
     history[nom] = function () {
       var resultat = origine.apply(this, arguments);
-      setTimeout(verifier, 0);
+      setTimeout(signaler, 0);
       return resultat;
     };
   });
-  window.addEventListener("popstate", verifier);
+  window.addEventListener("popstate", signaler);
 
-  // Changement d'onglet actif / fenêtre.
-  document.addEventListener("visibilitychange", verifier);
-
-  // Détection initiale + filet de sécurité SPA (léger).
-  setTimeout(verifier, 0);
-  setInterval(verifier, TICK_MS);
+  // Signalement initial (titre réel disponible après le premier rendu).
+  function initial() {
+    var pret = document.readyState === "complete" || document.readyState === "interactive";
+    if (pret) {
+      signaler();
+    } else {
+      document.addEventListener("DOMContentLoaded", signaler, { once: true });
+    }
+  }
+  // document_start : on retente un peu plus tard si le titre n'était pas prêt,
+  // puis régulièrement — un simple garde par URL évite tout spam.
+  setTimeout(initial, 0);
+  setInterval(function () {
+    if (location.href !== dernierUrl) signaler();
+  }, 4000);
 })();

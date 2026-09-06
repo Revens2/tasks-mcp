@@ -49,3 +49,13 @@ jobs:
 
       - name: Run unit tests (gateway + upstream MCP)
         run: python -m pytest tests/gateway tests/mcp
+
+  extension:
+    name: Extension tests (node)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Run node tests (parsing + cerveau)
+        run: node --test extension/tests/detect.test.cjs extension/tests/cerveau.test.cjs

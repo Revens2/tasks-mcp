@@ -8,15 +8,19 @@ conversation ChatGPT exacte qui a déclenché la création : l'URL privée
 ## Fonctionnement
 
 ```
-Onglet Chrome sur https://chatgpt.com/c/<id>   (toi, en train de discuter)
-        │  extension « Contexte ChatGPT → Tasks MCP » (locale, MV3)
-        │  lit UNIQUEMENT location.href + document.title, quand l'onglet est visible
+Onglet sur https://chatgpt.com/c/<id>   (la dernière conversation que tu as activée)
+        │  content script : signale les navigations SPA (URL + titre uniquement)
+        ▼
+Service worker (cerveau.js) : choisit l'onglet PROPRIÉTAIRE
+        │  = dernière conversation réellement activée (tabs/windows/onActivated)
+        │  heartbeat automatique ~45 s tant que l'onglet reste sur /c/<id>
+        │  (même en arrière-plan : une conversation active n'expire plus)
         ▼
 POST /context/chatgpt   (tasks-mcp, 127.0.0.1:8791 — via nginx HTTPS public ou NetBird)
         │  jeton dédié « browser context writer » (TASKS_CONTEXT_TOKEN)
         │  validation stricte : https://chatgpt.com/c/<id> uniquement
         ▼
-Registre mémoire (TTL 300 s) — {url, conversation_id, titre?, client_id, vu_le}
+Registre mémoire (TTL 300 s) — {url, conversation_id, titre?, client_id, onglet_id, vu_le}
         │
 ChatGPT (n'importe où) appelle tasks_create via /mcp (flux existant inchangé)
         ▼
@@ -25,15 +29,23 @@ tasks_create : si un contexte récent existe → notes += « ---\nConversation C
 Radicale (CalDAV) → synchro iPhone → Rappels affiche la note avec le lien cliquable
 ```
 
-Points clés :
+Points clés (v2 — corrige le bug « contexte effacé en boucle ») :
 
-- L'extension n'**envoie** que lorsque l'onglet ChatGPT est réellement visible
-  et sur `/c/<id>` ; elle rafraîchit (heartbeat ~120 s) tant que tu restes sur
-  la conversation, et **efface** le contexte dès que l'onglet visible quitte
-  une conversation (accueil, page partagée…) → pas de mauvaises associations.
-- Le serveur conserve **un seul contexte récent** (pas d'historique de
-  navigation) ; au-delà du TTL (300 s par défaut), `tasks_create` crée la tâche
-  **sans** lien plutôt que d'ajouter un mauvais lien.
+- **Un seul propriétaire** : le contexte publié est celui de la **dernière
+  conversation réellement activée** (onglet activé / fenêtre focalisée).
+  Basculer A → B → A republie A ; un onglet conversation en arrière-plan ne
+  vole jamais la propriété.
+- **Heartbeat ~45 s piloté par le worker** (alarme), pas par la visibilité de
+  l'onglet : tant que l'onglet propriétaire reste ouvert sur `/c/<id>`, le TTL
+  serveur (300 s) est rafraîchi — même fenêtre réduite ou onglet en fond.
+- **Aucun effacement croisé** : une page ChatGPT SANS conversation (accueil,
+  `/share/`…) ne peut **jamais** effacer le contexte d'une conversation ouverte
+  ailleurs. L'effacement n'a lieu que si l'**onglet propriétaire** quitte sa
+  conversation (navigation SPA/chargement) ou se ferme. Côté serveur,
+  l'effacement n'est accepté que s'il porte le même `onglet_id` que le dépôt.
+- Le serveur conserve **un seul contexte récent** par client (pas d'historique
+  de navigation) ; sans contexte frais, `tasks_create` crée la tâche **sans**
+  lien plutôt que d'ajouter un mauvais lien (raison journalisée, jamais l'URL).
 - Aucun lien `chatgpt.com/share/…` n'est jamais généré ; rien n'est envoyé à un
   tiers ; aucune URL de conversation n'est journalisée.
 
@@ -57,18 +69,62 @@ Points clés :
 ⚠️ Secret : lis-le dans **ton** terminal, ne le colle jamais dans un chat/log.
 
 ```bash
-# À exécuter sur le serveur, dans TON terminal :
-sudo bash /srv/tasks/scripts/afficher-secret.sh contexte
+ssh vps-etude "sudo bash /srv/tasks/scripts/afficher-secret.sh contexte"
 ```
 
 ### 3. Configurer l'extension
 
 1. Clic sur l'**icône de l'extension** (ou clic droit → Options).
-2. **Endpoint** : `https://mcp.example.org/context/chatgpt`
+2. **Endpoint** : `https://tasks-mcp.duckdns.org/context/chatgpt`
 3. **Jeton** : colle le jeton de l'étape 2.
 4. **Enregistrer** → Chrome demande la permission d'accéder à l'endpoint →
    **Autoriser** (une seule fois).
-5. **Tester la connexion** → « Connexion OK (HTTP 200) ».
+5. **Tester le serveur** → doit afficher 🟢 « Serveur accessible —
+   authentification valide » (transport + jeton uniquement).
+6. **Tester la conversation courante** (onglet ChatGPT visible sur
+   `chatgpt.com/c/…`) → doit afficher 🟢 « conversation détectée — ID présent —
+   contexte enregistré ».
+
+### Deux tests distincts — signification des états
+
+**« Tester le serveur »** vérifie seulement que l'endpoint répond et que le
+jeton est accepté (transport + authentification). Un 🟢 ici ne dit RIEN sur la
+détection d'une conversation.
+
+**« Tester la conversation courante »** vérifie le pipeline complet : onglet
+actif sur ChatGPT, URL `/c/<id>`, envoi de la VRAIE URL de l'onglet, puis
+confirmation du stockage côté serveur.
+
+| État affiché | Signification |
+|---|---|
+| 🟢 Serveur accessible — authentification valide | transport + jeton OK (test serveur) |
+| 🟢 conversation détectée — ID présent — contexte enregistré | pipeline complet vérifié (test conversation) |
+| 🟠 Serveur accessible — aucune conversation `/c/<id>` détectée dans l'onglet actif | serveur OK, mais la page ChatGPT ouverte n'est pas une conversation (accueil, `/share/…`, `/g/…`) — pas un problème réseau |
+| 🟠 l'onglet actif n'est pas ChatGPT | le test conversation n'a rien à vérifier sur cet onglet |
+| 🔴 Serveur accessible — authentification refusée (401) | jeton invalide ou tourné |
+| 🔴 Impossible de joindre Tasks MCP | problème réseau / endpoint injoignable |
+| 🔴 URL ChatGPT détectée mais format de conversation invalide (400) | l'ID après `/c/` ne passe pas la validation serveur |
+
+Le serveur ne renvoie l'ID de conversation dans sa réponse **que** si
+`TASKS_CONTEXT_ECHO_ID=1` (débogage) ; par défaut la réponse d'un dépôt valide
+est `{"statut": "ok", "conversation_detectee": true, "id_present": true,
+"ttl_s": …}` — l'ID reste local à l'extension.
+
+### Vue ensemble de la popup (diagnostic sans logs)
+
+La page d'options/popup affiche, sans exposer ni URL ni ID :
+
+```text
+Serveur : 🟢 joignable
+Conversation : 🟢 active (/c/…) — heartbeat automatique
+Contexte : 🟢 actif (âge 12 s)
+Dernier envoi : il y a 12 s (réussi)
+```
+
+- `Conversation` = état local du worker (onglet propriétaire présent ?) ;
+- `Contexte` = diagnostic serveur (`contexte_actif` / `contexte_expire` /
+  `contexte_absent` + âge) ;
+- `Dernier envoi` = dernier POST du worker (heartbeat), jamais l'URL.
 
 ### 4. Vérification réelle
 
@@ -87,8 +143,9 @@ sudo bash /srv/tasks/scripts/afficher-secret.sh contexte
 | « Dernier envoi : échec — config » | endpoint/jeton non enregistrés → refaire l'étape 3 |
 | « échec (HTTP 401) » | mauvais jeton ou rotation récente → relire le jeton et le re-saisir |
 | « échec (HTTP 429) » | trop de requêtes → attendre ~1 min (l'extension retente seule) |
-| Aucun envoi affiché | onglet non visible ou hors `chatgpt.com/c/...` → comportement normal |
-| Rappel créé sans lien | contexte expiré (> 5 min sans heartbeat) → comportement voulu (pas de mauvais lien) |
+| Dernier envoi : échec, sans conversation ouverte | normal : pas d'onglet propriétaire → pas d'envoi ; la Vue ensemble (popup) l'explique |
+| Rappel créé sans lien | aucune conversation active au moment du `tasks_create` : onglet conversation fermé/quitté, ou aucun onglet `/c/…` activé depuis le démarrage. La popup distingue « aucun contexte » / « expiré » / « actif » |
+| Lien d'une ANCIENNE conversation encore ajouté | l'onglet propriétaire est resté ouvert sur `/c/…` (le contexte suit la dernière conversation activée) → ferme/quitte cet onglet pour l'effacer |
 
 ## Composants
 
@@ -101,7 +158,9 @@ sudo bash /srv/tasks/scripts/afficher-secret.sh contexte
 | `deploy/nginx/tasks-mcp-public.conf` | vhost public HTTPS (duckdns) : même location |
 | `scripts/rotation-jeton-contexte-chatgpt.sh` | rotation du jeton contexte |
 | `extension/chatgpt-contexte/` | extension Chrome MV3 (charger ce dossier) |
-| `extension/tests/detect.test.cjs` | tests node de la logique de détection |
+| `extension/chatgpt-contexte/cerveau.js` | logique pure « onglet propriétaire » (testée en node) |
+| `extension/tests/detect.test.cjs` | tests node du parsing URL/titre |
+| `extension/tests/cerveau.test.cjs` | tests node du cerveau (A→B→A, anti-effacement croisé, heartbeat) |
 
 L'endpoint vit **dans le processus tasks-mcp** (même registre mémoire que
 `tasks_create`) et **jamais** dans la passerelle OAuth `/mcp` : le jeton
@@ -113,17 +172,18 @@ contexte ne peut rien faire d'autre que déposer/effacer ce contexte.
 2. Chrome/Chromium/Brave → `chrome://extensions` → activer **Mode développeur**.
 3. **Charger l'extension non empaquetée** → sélectionner `extension/chatgpt-contexte`.
 4. Cliquer sur l'icône de l'extension → renseigner :
-   - **Endpoint** : `https://mcp.example.org/context/chatgpt`
-     (ou `http://198.51.100.10:8793/context/chatgpt` en NetBird-only) ;
+   - **Endpoint** : `https://tasks-mcp.duckdns.org/context/chatgpt`
+     (ou `http://10.200.114.203:8793/context/chatgpt` en NetBird-only) ;
    - **Jeton** : le « browser context writer » (voir plus bas).
    - **Enregistrer** (Chrome demande alors la permission d'accéder à l'endpoint
      choisi — c'est la seule permission d'hôte supplémentaire demandée).
 5. **Tester la connexion** dans la page d'options : `HTTP 200` attendu.
 
-Permissions demandées (minimum) : `storage` (config) + accès à `chatgpt.com`
-(content script) + l'hôte de l'endpoint choisi. **Aucun** accès aux cookies, à
-l'historique, à Gmail ou au contenu des pages : le script ne lit que l'URL et
-le titre.
+Permissions demandées (minimum) : `storage` (config + état session) +
+`alarms` (heartbeat) + accès à `chatgpt.com` (content script) + l'hôte de
+l'endpoint choisi. **Aucun** accès aux cookies, à l'historique, à Gmail ou au
+contenu des pages : l'extension ne lit que l'URL et le titre des onglets
+`chatgpt.com` (le contenu des conversations n'est jamais lu).
 
 ## Création du jeton « browser context writer »
 
@@ -148,8 +208,30 @@ Saisis ensuite ce jeton dans les options de l'extension.
 |---|---|
 | `TASKS_CONTEXT_TOKEN` | jeton Bearer « browser context writer » (absent → endpoint inerte 503) |
 | `TASKS_CONTEXT_TTL_S` | durée de validité d'un contexte, secondes (défaut 300) |
+| `TASKS_CONTEXT_ECHO_ID` | `1` = renvoyer `conversation_id` dans la réponse du dépôt (débogage local uniquement ; défaut 0, jamais loggé) |
 
 `.env.example` ne contient que des placeholders (documentation).
+
+### Réponses de l'endpoint `/context/chatgpt`
+
+- `POST` avec URL de conversation valide → `200` : `{"statut": "ok",
+  "conversation_detectee": true, "id_present": true, "ttl_s": 300}`
+  (+ `conversation_id` seulement si `TASKS_CONTEXT_ECHO_ID=1`).
+- `POST` `{"actif": false, "client_id": …, "onglet_id": …}` → `200` :
+  `{"statut": "ok", "efface": n}`. L'effacement n'est accepté que si
+  `onglet_id` correspond à l'onglet qui a déposé le contexte (sinon `0`) :
+  une page sans conversation ne peut pas effacer le contexte d'une autre
+  conversation. Le bouton « Tester le serveur » (probe `actif:false` sans
+  contexte) renvoie `efface: 0` sans rien détruire.
+- `GET` (même jeton) → diagnostic interne `{"statut": "ok",
+  "contexte_present": bool, "id_present": bool, "age_s": nombre|null,
+  "raison": "contexte_actif"|"contexte_expire"|"contexte_absent",
+  "dernier_depot_s": nombre|null, "ttl_s": 300}` — ne renvoie jamais l'URL
+  ni l'ID de conversation, aucun historique. La raison distingue « aucun
+  contexte », « expiré » et « actif » (l'extension l'affiche dans sa popup).
+- Erreurs : `400` (URL invalide, ex. `/share/`, autre hôte, ID trop court),
+  `401` (jeton), `405` (méthode), `413` (corps), `415` (type), `429` (trop de
+  requêtes), `503` (endpoint non configuré).
 
 ## Test manuel
 
@@ -159,8 +241,12 @@ Saisis ensuite ce jeton dans les options de l'extension.
    <sujet> » → ChatGPT appelle `tasks_create`.
 3. `tasks_get` (ou l'iPhone après synchro) : les notes contiennent
    `---\nConversation ChatGPT :\n<url>`. Le lien s'ouvre sous ton compte.
-4. Sortie de la conversation (accueil ChatGPT visible) → l'extension efface le
-   contexte : une création de tâche ultérieure n'aura **pas** de lien.
+4. Ferme l'onglet de la conversation (ou navigue son onglet vers l'accueil) →
+   le contexte est effacé : une création de tâche ultérieure n'aura **pas** de
+   lien. Une page accueil ouverte dans un AUTRE onglet n'efface rien.
+5. Test de durée : laisse la conversation ouverte (onglet actif ou en fond)
+   plus de 5 minutes, puis crée une tâche → le lien est TOUJOURS présent
+   (heartbeat ~45 s du worker, indépendant de la visibilité de l'onglet).
 
 ## Désinstallation
 
