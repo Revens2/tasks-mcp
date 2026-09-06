@@ -18,7 +18,10 @@ sudo -u tasks-app bash -c '
 
 Résultat attendu : **23 passed** (4 intégration + unités MCP + passerelle).
 
-- `tests/mcp/` — unités : modèle de temps (Europe/Paris), conversion iCalendar↔Tache.
+- `tests/mcp/` — unités : modèle de temps (Europe/Paris), conversion iCalendar↔Tache,
+  contexte ChatGPT (validation URL/titre, registre TTL, bloc notes), endpoint HTTP
+  `/context/chatgpt` (jeton, taux, tailles, effacement), et lien `tasks_create`
+  ↔ contexte (frais/expiré/absent, préservation et non-duplication des notes).
 - `tests/integration/test_service_caldav.py` — cycle complet CalDAV réel
   (create/get/update/due/complete/reopen/move/soft-delete/restore/permanent),
   conflit ETag (If-Match, pas d'écrasement), détection de changement externe
@@ -26,7 +29,18 @@ Résultat attendu : **23 passed** (4 intégration + unités MCP + passerelle).
   `ZZTest-*` créées puis supprimées (teardown).
 - `tests/gateway/` — passerelle : découverte RFC 8414/9728, enregistrement dynamique,
   PKCE + consentement par phrase, `/mcp` anonyme → 401, mauvais jeton → 401,
-  proxy verbatim (V1 : aucun outil masqué), 502 si upstream indisponible, /health.
+  politique outil par outil (lecture/écriture/fail-closed), 502 si upstream
+  indisponible, /health.
+
+## Tests de l'extension (node, poste de développement)
+
+```bash
+node --test extension/tests/detect.test.cjs
+```
+
+Couvre la logique pure de détection : URL `/c/…` vs autres pages ChatGPT,
+détection initiale, navigation SPA, changement d'onglet (visibilité), heartbeat
+et effacement hors conversation.
 
 ## Tests manuels déjà exécutés (déploiement réel)
 
