@@ -68,6 +68,10 @@ def test_http_rejete():
         "ftp://chatgpt.com/c/abc",
         "https://chatgpt.com/c/abc%2F..",
         "https://chatgpt.com/c/abc\nchatgpt.com/c/x",
+        # IDs trop courts : la validation exige une longueur cohérente (>= 8).
+        "https://chatgpt.com/c/abc",
+        "https://chatgpt.com/c/1234567",
+        "https://chatgpt.com/c/" + "a" * 7,
     ],
 )
 def test_urls_malveillantes_rejetees(mauvaise):
@@ -85,6 +89,12 @@ def test_url_non_textuelle_rejetee():
 def test_url_trop_longue_rejetee():
     with pytest.raises(PayloadInvalide):
         valider_url(f"https://chatgpt.com/c/{'a' * 5000}")
+
+
+def test_id_court_mais_longueur_minimale_accepte():
+    # 8 caractères = borne basse (UUID réels = 36) : accepté sans regex UUID.
+    id_court = "a" * 8
+    assert valider_url(f"https://chatgpt.com/c/{id_court}") == f"https://chatgpt.com/c/{id_court}"
 
 
 # --- payload complet ---------------------------------------------------------
@@ -194,6 +204,31 @@ def test_ttl_non_depasse_retourne():
     base = _maintenant()
     reg.enregistrer(contexte_depuis_payload({"url": URL_VALIDE}), maintenant=base)
     assert reg.dernier_valide(ttl_s=300, maintenant=base + timedelta(seconds=299)) is not None
+
+
+def test_etat_vide():
+    reg = RegistreContexte()
+    etat = reg.etat(ttl_s=300, maintenant=_maintenant())
+    assert etat == {"contexte_present": False, "age_s": None}
+
+
+def test_etat_apres_depot_sans_fuite():
+    reg = RegistreContexte()
+    base = _maintenant()
+    reg.enregistrer(contexte_depuis_payload({"url": URL_VALIDE}), maintenant=base)
+    etat = reg.etat(ttl_s=300, maintenant=base + timedelta(seconds=2))
+    assert etat["contexte_present"] is True
+    assert 0 < etat["age_s"] <= 2.5
+    # Jamais d'URL/ID dans le diagnostic.
+    assert "url" not in etat and "conversation_id" not in etat
+
+
+def test_etat_expire():
+    reg = RegistreContexte()
+    base = _maintenant()
+    reg.enregistrer(contexte_depuis_payload({"url": URL_VALIDE}), maintenant=base)
+    etat = reg.etat(ttl_s=300, maintenant=base + timedelta(seconds=301))
+    assert etat == {"contexte_present": False, "age_s": None}
 
 
 # --- bloc notes --------------------------------------------------------------

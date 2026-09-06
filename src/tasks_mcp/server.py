@@ -77,6 +77,7 @@ def main() -> None:
             jeton=config.contexte_token,
             ttl_s=config.contexte_ttl_s,
             registre=service.contexte_registre,
+            echo_id=config.contexte_echo_id,
         ),
     )
     uvicorn.run(

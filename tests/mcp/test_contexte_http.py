@@ -39,13 +39,17 @@ def _app(
         limite_ip=limite_ip,
     )
 
+    return envelopper_application(_interne_factice(appels_internes), endpoint), endpoint
+
+
+def _interne_factice(appels_internes: list | None = None):
     async def interne(scope, receive, send):
         if appels_internes is not None:
             appels_internes.append(scope.get("path"))
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
-    return envelopper_application(interne, endpoint), endpoint
+    return interne
 
 
 def _client(app) -> httpx.AsyncClient:
@@ -59,7 +63,9 @@ def _entetes(jeton: str | None = JETON) -> dict[str, str]:
     return entetes
 
 
-def test_post_valide_enregistre_le_contexte():
+def test_post_valide_reponse_explicite_sans_echo_id():
+    """Un dépôt valide répond conversation_detectee/id_present ; l'ID n'est PAS
+    écho par défaut (limiter l'exposition, l'ID reste au client local)."""
     registre = RegistreContexte()
     app, _ = _app(registre=registre)
 
@@ -69,7 +75,10 @@ def test_post_valide_enregistre_le_contexte():
             assert r.status_code == 200, r.text
             d = r.json()
             assert d["statut"] == "ok"
+            assert d["conversation_detectee"] is True
+            assert d["id_present"] is True
             assert d["ttl_s"] == 300
+            assert "conversation_id" not in d, "l'ID ne doit pas être écho par défaut"
 
     _courir(_t())
     dernier = registre.dernier_valide(ttl_s=300)
@@ -77,6 +86,21 @@ def test_post_valide_enregistre_le_contexte():
     assert dernier.url == URL
     assert dernier.titre == "Titre"
     assert dernier.client_id == "abc"
+
+
+def test_post_valide_echo_id_en_debug_explicite():
+    """En mode débogage explicite (echo_id), l'ID de conversation est renvoyé."""
+    registre = RegistreContexte()
+    endpoint = ContexteEndpoint(jeton=JETON, ttl_s=300, registre=registre, echo_id=True)
+    app = envelopper_application(_interne_factice(), endpoint)
+
+    async def _t():
+        async with _client(app) as c:
+            r = await c.post(CHEMIN, json={"url": URL}, headers=_entetes())
+            assert r.status_code == 200
+            assert r.json()["conversation_id"] == UUID
+
+    _courir(_t())
 
 
 def test_sans_jeton_401():
@@ -114,15 +138,55 @@ def test_endpoint_non_configuré_503():
     _courir(_t())
 
 
-def test_methodes_non_post_405():
+def test_methodes_non_autorisees_405():
     app, _ = _app()
 
     async def _t():
         async with _client(app) as c:
-            for methode in ("get", "put", "delete"):
+            for methode in ("put", "delete", "patch"):
                 r = await getattr(c, methode)(CHEMIN, headers=_entetes())
                 assert r.status_code == 405, methode
-            assert (await c.get(CHEMIN)).headers.get("allow") == "POST"
+            assert (await c.put(CHEMIN)).headers.get("allow") == "GET, POST"
+
+    _courir(_t())
+
+
+def test_get_diagnostic_necessite_jeton():
+    app, _ = _app()
+
+    async def _t():
+        async with _client(app) as c:
+            r = await c.get(CHEMIN)
+            assert r.status_code == 401
+
+    _courir(_t())
+
+
+def test_get_diagnostic_avant_puis_apres_depot():
+    registre = RegistreContexte()
+    app, _ = _app(registre=registre)
+
+    async def _t():
+        async with _client(app) as c:
+            # Avant tout dépôt : pas de contexte, aucune fuite d'ID/URL.
+            r = await c.get(CHEMIN, headers=_entetes())
+            assert r.status_code == 200
+            d = r.json()
+            assert d["contexte_present"] is False
+            assert d["age_s"] is None
+            assert d["ttl_s"] == 300
+            for cle in ("url", "conversation_id", "title"):
+                assert cle not in d
+
+            # Après dépôt d'une conversation valide : contexte présent, âge >= 0.
+            r = await c.post(CHEMIN, json={"url": URL}, headers=_entetes())
+            assert r.status_code == 200
+            r = await c.get(CHEMIN, headers=_entetes())
+            assert r.status_code == 200
+            d = r.json()
+            assert d["contexte_present"] is True
+            assert d["age_s"] >= 0
+            assert "url" not in d and "conversation_id" not in d
 
     _courir(_t())
 

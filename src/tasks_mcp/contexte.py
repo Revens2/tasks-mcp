@@ -33,8 +33,10 @@ TAILLE_MAX_CLIENT = 64
 TTL_DEFAUT_S = 300
 
 # Identifiant de conversation : chaîne bornée sans séparateur dangereux
-# (lettres/chiffres/tiret/souligné). Le chemin complet est vérifié plus bas.
-_MOTIF_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+# (lettres/chiffres/tiret/souligné), longueur 8..100 — les IDs réels ChatGPT
+# sont des UUID de 36 caractères ; aucune regex UUID stricte (risque de faux
+# négatifs sur d'anciens formats), mais un segment trop court est refusé.
+_MOTIF_ID = re.compile(r"^[A-Za-z0-9_-]{8,100}$")
 # client_id : même alphabet, envoyé par l'extension (UUID ou libellé court).
 _MOTIF_CLIENT = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 HOTE_AUTORISE = "chatgpt.com"
@@ -237,6 +239,18 @@ class RegistreContexte:
             if not self._par_client:
                 return None
             return max(self._par_client.values(), key=lambda c: c.vu_le.timestamp())
+
+    def etat(self, ttl_s: float = TTL_DEFAUT_S, maintenant: datetime | None = None) -> dict:
+        """Diagnostic interne (GET /context/chatgpt) : présence et âge du
+        contexte le plus récent encore frais. Ne renvoie NI l'URL NI l'ID de
+        conversation, et aucun historique.
+        """
+        maintenant = maintenant or datetime.now(timezone.utc)
+        dernier = self.dernier_valide(ttl_s=ttl_s, maintenant=maintenant)
+        if dernier is None or dernier.vu_le is None:
+            return {"contexte_present": False, "age_s": None}
+        age = max(0.0, maintenant.timestamp() - dernier.vu_le.timestamp())
+        return {"contexte_present": True, "age_s": round(age, 1)}
 
 
 # ---------------------------------------------------------------------------
