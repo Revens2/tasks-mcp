@@ -37,6 +37,58 @@ Points clés :
 - Aucun lien `chatgpt.com/share/…` n'est jamais généré ; rien n'est envoyé à un
   tiers ; aucune URL de conversation n'est journalisée.
 
+## Mise en route pas à pas (validée le 2026-09-06)
+
+### 1. Charger l'extension dans Chrome
+
+1. Copie le dossier `extension/chatgpt-contexte` du dépôt vers un emplacement
+   stable (ex. `Documents/extension-chatgpt-contexte`).
+2. Chrome/Chromium/Brave → `chrome://extensions` → active **Mode développeur**.
+3. **Charger l'extension non empaquetée** → sélectionne le dossier qui contient
+   `manifest.json`.
+4. La carte « Contexte ChatGPT → Tasks MCP » doit apparaître **sans erreur**.
+
+   > Si Chrome affiche « Échec du chargement de l'extension », vérifie que le
+   > dossier choisi est bien le bon et que ton dépôt est à jour (voir
+   > Dépannage).
+
+### 2. Récupérer le jeton « browser context writer »
+
+⚠️ Secret : lis-le dans **ton** terminal, ne le colle jamais dans un chat/log.
+
+```bash
+ssh vps-etude "sudo bash /srv/tasks/scripts/afficher-secret.sh contexte"
+```
+
+### 3. Configurer l'extension
+
+1. Clic sur l'**icône de l'extension** (ou clic droit → Options).
+2. **Endpoint** : `https://tasks-mcp.duckdns.org/context/chatgpt`
+3. **Jeton** : colle le jeton de l'étape 2.
+4. **Enregistrer** → Chrome demande la permission d'accéder à l'endpoint →
+   **Autoriser** (une seule fois).
+5. **Tester la connexion** → « Connexion OK (HTTP 200) ».
+
+### 4. Vérification réelle
+
+1. Ouvre une conversation ChatGPT (`chatgpt.com/c/...`), onglet visible ~5 s.
+2. Options de l'extension → « Dernier envoi : réussi ».
+3. Dans ChatGPT : « Je regarderai ça plus tard : <sujet> » → la tâche est créée.
+4. iPhone → Rappels → Inbox : la note contient
+   `---\nConversation ChatGPT :\nhttps://chatgpt.com/c/<id>` ; le lien s'ouvre
+   sous ton compte.
+
+## Dépannage
+
+| Symptôme | Cause → solution |
+|---|---|
+| « Échec du chargement de l'extension — locale name must be a string » | version du dépôt antérieure au fix `manifest.json` (clé `default_locale` retirée) → mettre le dépôt à jour puis « Réessayer » ou recharger le dossier |
+| « Dernier envoi : échec — config » | endpoint/jeton non enregistrés → refaire l'étape 3 |
+| « échec (HTTP 401) » | mauvais jeton ou rotation récente → relire le jeton et le re-saisir |
+| « échec (HTTP 429) » | trop de requêtes → attendre ~1 min (l'extension retente seule) |
+| Aucun envoi affiché | onglet non visible ou hors `chatgpt.com/c/...` → comportement normal |
+| Rappel créé sans lien | contexte expiré (> 5 min sans heartbeat) → comportement voulu (pas de mauvais lien) |
+
 ## Composants
 
 | Fichier (dépôt tasks-mcp) | Rôle |
