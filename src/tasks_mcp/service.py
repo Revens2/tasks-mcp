@@ -17,6 +17,7 @@ from urllib.parse import quote
 
 from . import acteur, temps
 from .caldav import CalDAV, Collection, ErreurCalDAV
+from .contexte import RegistreContexte
 from .ics import OMIS, ErreurICS, creer_ics, patcher_ics, taches_depuis_ics
 from .model import Tache
 from .store import Magasin
@@ -50,6 +51,10 @@ class Service:
         self.caldav = caldav
         self.magasin = magasin
         self.config = config
+        # Registre mémoire du « contexte ChatGPT actif » (alimenté par l'endpoint
+        # HTTP /context/chatgpt, lu par tasks_create). Même processus, aucun
+        # historique conservé : voir contexte.py.
+        self.contexte_registre = RegistreContexte()
         self._derniere_sync = 0.0
 
     # ------------------------------------------------------------------ synchronisation

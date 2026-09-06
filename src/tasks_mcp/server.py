@@ -19,6 +19,7 @@ from . import outils
 from .acteur import ActeurMiddleware
 from .caldav import CalDAV
 from .config import Config
+from .contexte_http import ContexteEndpoint, envelopper_application
 from .service import Service
 from .store import Magasin
 
@@ -66,7 +67,18 @@ def main() -> None:
 
     # streamable_http_app() construit l'application ASGI (sans argument dans ce SDK) ;
     # ActeurMiddleware l'enveloppe pour propager l'acteur depuis l'en-tête interne.
-    application = ActeurMiddleware(mcp.streamable_http_app())
+    # L'endpoint /context/chatgpt est servi par ce même processus (registre
+    # mémoire partagé avec tasks_create) mais ne passe jamais par la passerelle :
+    # il est enveloppé à l'extérieur, avant tout middleware MCP.
+    mcp_app = ActeurMiddleware(mcp.streamable_http_app())
+    application = envelopper_application(
+        mcp_app,
+        ContexteEndpoint(
+            jeton=config.contexte_token,
+            ttl_s=config.contexte_ttl_s,
+            registre=service.contexte_registre,
+        ),
+    )
     uvicorn.run(
         application,
         host="127.0.0.1",

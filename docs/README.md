@@ -20,6 +20,16 @@ tasks-gateway (systemd, 127.0.0.1:8792)    ← auth OAuth (dormante) + Bearer CL
 nginx NetBird :8793 → /mcp  (ChatGPT/CLI)
 ```
 
+### Contexte ChatGPT → lien de conversation dans les rappels
+
+Quand tu dis à ChatGPT « je regarderai ça plus tard », la tâche créée contient
+dans ses notes un lien cliquable vers la conversation exacte
+(`https://chatgpt.com/c/<id>`). Une extension Chrome locale (voir
+`docs/CONTEXTE-CHATGPT.md`) publie l'URL de l'onglet actif sur
+`POST /context/chatgpt` (jeton dédié, validation stricte) ; `tasks_create`
+ajoute le bloc aux notes si le contexte est récent (TTL 300 s). Rien n'est
+envoyé à un tiers, aucun lien public `share` n'est généré.
+
 ## Services et ports
 
 | Composant | Emplacement | Écoute | Accès |
@@ -50,12 +60,17 @@ niveau bind, en plus du firewall.
   renouvellement PKI, santé.
 - `docs/TESTS.md` — suites de tests et leur exécution.
 - `docs/ARCHITECTURE.md` — décisions, modèle de données, concurrence, sécurité.
+- `docs/CONTEXTE-CHATGPT.md` — contexte ChatGPT : extension, endpoint, jeton,
+  sécurité, tests manuels, rotation, désinstallation.
 
 ## Identifiants (jamais dans Git)
 
 - Compte CalDAV : `juliann` (mot de passe dans `secrets/tasks.env`,
   récupérable par `sudo bash scripts/afficher-secret.sh`).
 - Jeton MCP CLI : `TASKS_MCP_TOKEN` (rotation : `sudo bash scripts/rotation-jeton-tasks.sh`).
+- Jeton contexte ChatGPT (extension) : `TASKS_CONTEXT_TOKEN` (rotation :
+  `sudo bash scripts/rotation-jeton-contexte-chatgpt.sh` ; lecture :
+  `sudo bash scripts/afficher-secret.sh contexte`).
 - Phrase de consentement OAuth (phase 2) : `TASKS_MCP_CONSENT_HASH`.
 
 ## Mise à jour

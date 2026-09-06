@@ -14,7 +14,7 @@ from typing import Annotated, Optional
 
 from pydantic import Field
 
-from . import acteur, temps
+from . import acteur, contexte, temps
 from .caldav import ErreurCalDAV
 from .model import Tache, cle_tri, correspond, est_en_retard
 from .service import ConflitModification, Introuvable, ListeInconnue, Service
@@ -75,6 +75,26 @@ def _garde_terminee(uid: str, actuelle: Tache, inclure_terminee: bool) -> dict |
             "tache_actuelle": _json_tache(actuelle),
         }
     return None
+
+
+def _notes_avec_contexte_recent(service: Service, notes: str | None) -> str | None:
+    """Ajoute le bloc « Conversation ChatGPT » si un contexte récent existe.
+
+    Strictement best-effort : si le registre est absent, vide, expiré ou en
+    erreur, les notes sont rendues telles quelles — `tasks_create` ne doit
+    jamais échouer (ni même ralentir) à cause du contexte.
+    """
+    try:
+        registre = getattr(service, "contexte_registre", None)
+        if registre is None:
+            return notes
+        ttl = int(getattr(service.config, "contexte_ttl_s", 0) or 0)
+        actuel = registre.dernier_valide(ttl_s=ttl if ttl > 0 else contexte.TTL_DEFAUT_S)
+        if actuel is None:
+            return notes
+        return contexte.notes_avec_contexte(notes, actuel)
+    except Exception:  # noqa: BLE001 - jamais bloquer la création de tâche
+        return notes
 
 
 def _erreur(exc: Exception) -> dict:
@@ -181,8 +201,9 @@ def enregistrer(mcp, service: Service) -> None:
                 return {"erreur": "date_invalide", "message": f"échéance illisible : {due!r}"}
             if priority is not None and not (1 <= int(priority) <= 9):
                 return {"erreur": "priorite_invalide", "message": "priorité hors bornes 1..9"}
+            notes_finales = _notes_avec_contexte_recent(service, notes)
             tache = service.creer(
-                title, liste=list, notes=notes, due=due_dt, start=start_dt,
+                title, liste=list, notes=notes_finales, due=due_dt, start=start_dt,
                 priority=int(priority) if priority is not None else None,
             )
             return {"tache": _json_tache(tache)}

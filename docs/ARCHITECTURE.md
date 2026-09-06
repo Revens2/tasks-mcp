@@ -69,6 +69,25 @@ secrets hors Git. Aucun reverse proxy ni infra parallèle ajouté.
 `tasks_today`, `tasks_overdue`, `tasks_upcoming`, `tasks_unscheduled`,
 `tasks_recently_changed`, `tasks_history`.
 
+### Contexte ChatGPT → lien de conversation (endpoint /context/chatgpt)
+- Une extension Chrome locale observe l'onglet ChatGPT actif (URL + titre
+  uniquement, jamais le contenu) et publie `POST /context/chatgpt` quand une
+  conversation `/c/<id>` est visible (heartbeat 120 s) ; elle efface le
+  contexte (`{"actif": false}`) quand l'onglet quitte une conversation.
+- L'endpoint vit DANS tasks-mcp (127.0.0.1:8791) — même registre mémoire que
+  `tasks_create`, aucune sync inter-processus — et n'est jamais exposé par la
+  passerelle `/mcp` : nginx (vhost réseau privé + vhost public HTTPS) route la
+  route exacte vers l'upstream.
+- Auth : jeton dédié ultra-scopé `TASKS_CONTEXT_TOKEN` (aucun droit MCP,
+  rotation scriptée indépendante, comparé en temps constant). Validation
+  stricte de l'URL (`https://chatgpt.com/c/<id>` uniquement, jamais `/share/`),
+  titre assaini (contrôles → espaces, ≤ 200 car.), corps ≤ 4 Ko, rate limits
+  nginx + applicatifs (jeton/IP). Aucune URL/ID de conversation journalisée.
+- Registre mémoire par `client_id` + TTL (`TASKS_CONTEXT_TTL_S`, défaut 300 s) :
+  pas d'historique de navigation. `tasks_create` ajoute aux notes
+  `---\nConversation ChatGPT :\n<url>` (titre si dispo) quand un contexte est
+  frais — best-effort, jamais d'échec ni de bloc en double, notes préservées.
+
 ### Modèle de tâche (normalisé, indépendant d'iCalendar)
 `id/uid, title, notes, status (needs_action/completed), completed, completed_at,
 priority, due, start, created, updated, list, etag, href, trashed`. Fuseau Europe/Paris,

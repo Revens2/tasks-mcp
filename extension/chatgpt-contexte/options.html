@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Contexte ChatGPT → Tasks MCP</title>
+    <style>
+      body { font-family: system-ui, sans-serif; font-size: 13px; margin: 0; padding: 12px; width: 340px; }
+      h1 { font-size: 14px; margin: 0 0 8px; }
+      label { display: block; margin: 8px 0 2px; font-weight: 600; }
+      input { width: 100%; box-sizing: border-box; padding: 4px 6px; }
+      .boutons { margin-top: 12px; display: flex; gap: 8px; }
+      button { padding: 5px 10px; }
+      #statut { margin-top: 10px; white-space: pre-wrap; color: #444; font-size: 12px; }
+      .aide { color: #777; font-size: 11px; margin-top: 10px; line-height: 1.4; }
+      code { background: #f0f0f0; padding: 0 3px; }
+    </style>
+  </head>
+  <body>
+    <h1>Contexte ChatGPT → Tasks MCP</h1>
+
+    <label for="endpoint">Endpoint</label>
+    <input id="endpoint" type="url" spellcheck="false"
+      placeholder="https://mcp.example.org/context/chatgpt" />
+
+    <label for="jeton">Jeton (browser context writer)</label>
+    <input id="jeton" type="password" autocomplete="off" spellcheck="false" />
+
+    <div class="boutons">
+      <button id="enregistrer" type="button">Enregistrer</button>
+      <button id="tester" type="button">Tester la connexion</button>
+    </div>
+
+    <div id="statut"></div>
+
+    <div class="aide">
+      L'extension publie l'URL de la conversation active (onglet visible sur
+      <code>chatgpt.com/c/…</code>) vers votre Tasks MCP. Elle ne lit jamais le
+      contenu des conversations et ne stocke aucune URL. Voir
+      <code>docs/CONTEXTE-CHATGPT.md</code> du dépôt tasks-mcp pour créer le
+      jeton (<code>rotation-jeton-contexte-chatgpt.sh</code>).
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

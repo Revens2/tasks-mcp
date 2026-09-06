@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Contexte ChatGPT → Tasks MCP",
+  "version": "1.0.0",
+  "description": "Publie l'URL de la conversation ChatGPT active vers votre Tasks MCP (rappels Apple) afin que les tâches créées contiennent un lien cliquable vers la conversation. Ne lit que l'URL et le titre — jamais le contenu des conversations.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://chatgpt.com/*"],
+  "optional_host_permissions": [
+    "https://mcp.example.org/*",
+    "http://198.51.100.10/*",
+    "https://198.51.100.10/*",
+    "http://127.0.0.1/*",
+    "https://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["detect.js", "content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "Contexte ChatGPT → Tasks MCP",
+    "default_popup": "options.html"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  }
+}

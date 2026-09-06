@@ -1,0 +1,202 @@
+# Contexte ChatGPT → liens de conversation dans les rappels
+
+Quand ChatGPT crée une tâche via Tasks MCP (« je regarderai ça plus tard »…),
+le rappel (Apple Rappels) contient désormais un lien cliquable vers la
+conversation ChatGPT exacte qui a déclenché la création : l'URL privée
+`https://chatgpt.com/c/<id>` dans les notes.
+
+## Fonctionnement
+
+```
+Onglet Chrome sur https://chatgpt.com/c/<id>   (toi, en train de discuter)
+        │  extension « Contexte ChatGPT → Tasks MCP » (locale, MV3)
+        │  lit UNIQUEMENT location.href + document.title, quand l'onglet est visible
+        ▼
+POST /context/chatgpt   (tasks-mcp, 127.0.0.1:8791 — via nginx HTTPS public ou NetBird)
+        │  jeton dédié « browser context writer » (TASKS_CONTEXT_TOKEN)
+        │  validation stricte : https://chatgpt.com/c/<id> uniquement
+        ▼
+Registre mémoire (TTL 300 s) — {url, conversation_id, titre?, client_id, vu_le}
+        │
+ChatGPT (n'importe où) appelle tasks_create via /mcp (flux existant inchangé)
+        ▼
+tasks_create : si un contexte récent existe → notes += « ---\nConversation ChatGPT :\n… »
+        ▼
+Radicale (CalDAV) → synchro iPhone → Rappels affiche la note avec le lien cliquable
+```
+
+Points clés :
+
+- L'extension n'**envoie** que lorsque l'onglet ChatGPT est réellement visible
+  et sur `/c/<id>` ; elle rafraîchit (heartbeat ~120 s) tant que tu restes sur
+  la conversation, et **efface** le contexte dès que l'onglet visible quitte
+  une conversation (accueil, page partagée…) → pas de mauvaises associations.
+- Le serveur conserve **un seul contexte récent** (pas d'historique de
+  navigation) ; au-delà du TTL (300 s par défaut), `tasks_create` crée la tâche
+  **sans** lien plutôt que d'ajouter un mauvais lien.
+- Aucun lien `chatgpt.com/share/…` n'est jamais généré ; rien n'est envoyé à un
+  tiers ; aucune URL de conversation n'est journalisée.
+
+## Mise en route pas à pas (validée le 2026-09-06)
+
+### 1. Charger l'extension dans Chrome
+
+1. Copie le dossier `extension/chatgpt-contexte` du dépôt vers un emplacement
+   stable (ex. `Documents/extension-chatgpt-contexte`).
+2. Chrome/Chromium/Brave → `chrome://extensions` → active **Mode développeur**.
+3. **Charger l'extension non empaquetée** → sélectionne le dossier qui contient
+   `manifest.json`.
+4. La carte « Contexte ChatGPT → Tasks MCP » doit apparaître **sans erreur**.
+
+   > Si Chrome affiche « Échec du chargement de l'extension », vérifie que le
+   > dossier choisi est bien le bon et que ton dépôt est à jour (voir
+   > Dépannage).
+
+### 2. Récupérer le jeton « browser context writer »
+
+⚠️ Secret : lis-le dans **ton** terminal, ne le colle jamais dans un chat/log.
+
+```bash
+# À exécuter sur le serveur, dans TON terminal :
+sudo bash /srv/tasks/scripts/afficher-secret.sh contexte
+```
+
+### 3. Configurer l'extension
+
+1. Clic sur l'**icône de l'extension** (ou clic droit → Options).
+2. **Endpoint** : `https://mcp.example.org/context/chatgpt`
+3. **Jeton** : colle le jeton de l'étape 2.
+4. **Enregistrer** → Chrome demande la permission d'accéder à l'endpoint →
+   **Autoriser** (une seule fois).
+5. **Tester la connexion** → « Connexion OK (HTTP 200) ».
+
+### 4. Vérification réelle
+
+1. Ouvre une conversation ChatGPT (`chatgpt.com/c/...`), onglet visible ~5 s.
+2. Options de l'extension → « Dernier envoi : réussi ».
+3. Dans ChatGPT : « Je regarderai ça plus tard : <sujet> » → la tâche est créée.
+4. iPhone → Rappels → Inbox : la note contient
+   `---\nConversation ChatGPT :\nhttps://chatgpt.com/c/<id>` ; le lien s'ouvre
+   sous ton compte.
+
+## Dépannage
+
+| Symptôme | Cause → solution |
+|---|---|
+| « Échec du chargement de l'extension — locale name must be a string » | version du dépôt antérieure au fix `manifest.json` (clé `default_locale` retirée) → mettre le dépôt à jour puis « Réessayer » ou recharger le dossier |
+| « Dernier envoi : échec — config » | endpoint/jeton non enregistrés → refaire l'étape 3 |
+| « échec (HTTP 401) » | mauvais jeton ou rotation récente → relire le jeton et le re-saisir |
+| « échec (HTTP 429) » | trop de requêtes → attendre ~1 min (l'extension retente seule) |
+| Aucun envoi affiché | onglet non visible ou hors `chatgpt.com/c/...` → comportement normal |
+| Rappel créé sans lien | contexte expiré (> 5 min sans heartbeat) → comportement voulu (pas de mauvais lien) |
+
+## Composants
+
+| Fichier (dépôt tasks-mcp) | Rôle |
+|---|---|
+| `src/tasks_mcp/contexte.py` | validation stricte URL/titre, registre mémoire TTL, bloc de notes |
+| `src/tasks_mcp/contexte_http.py` | endpoint ASGI `POST /context/chatgpt` (jeton, rate limit, taille) |
+| `src/tasks_mcp/outils.py` | `tasks_create` : ajout best-effort du bloc si contexte récent |
+| `deploy/nginx/tasks-mcp.conf` | vhost NetBird : `location = /context/chatgpt` → upstream 8791 |
+| `deploy/nginx/tasks-mcp-public.conf` | vhost public HTTPS (duckdns) : même location |
+| `scripts/rotation-jeton-contexte-chatgpt.sh` | rotation du jeton contexte |
+| `extension/chatgpt-contexte/` | extension Chrome MV3 (charger ce dossier) |
+| `extension/tests/detect.test.cjs` | tests node de la logique de détection |
+
+L'endpoint vit **dans le processus tasks-mcp** (même registre mémoire que
+`tasks_create`) et **jamais** dans la passerelle OAuth `/mcp` : le jeton
+contexte ne peut rien faire d'autre que déposer/effacer ce contexte.
+
+## Installation de l'extension (mode développeur)
+
+1. Clone/à jour du dépôt tasks-mcp, dossier `extension/chatgpt-contexte`.
+2. Chrome/Chromium/Brave → `chrome://extensions` → activer **Mode développeur**.
+3. **Charger l'extension non empaquetée** → sélectionner `extension/chatgpt-contexte`.
+4. Cliquer sur l'icône de l'extension → renseigner :
+   - **Endpoint** : `https://mcp.example.org/context/chatgpt`
+     (ou `http://198.51.100.10:8793/context/chatgpt` en NetBird-only) ;
+   - **Jeton** : le « browser context writer » (voir plus bas).
+   - **Enregistrer** (Chrome demande alors la permission d'accéder à l'endpoint
+     choisi — c'est la seule permission d'hôte supplémentaire demandée).
+5. **Tester la connexion** dans la page d'options : `HTTP 200` attendu.
+
+Permissions demandées (minimum) : `storage` (config) + accès à `chatgpt.com`
+(content script) + l'hôte de l'endpoint choisi. **Aucun** accès aux cookies, à
+l'historique, à Gmail ou au contenu des pages : le script ne lit que l'URL et
+le titre.
+
+## Création du jeton « browser context writer »
+
+Le jeton est **ultra-scopé** : il ne sert qu'à cet endpoint (déposer/effacer le
+contexte). Il ne donne aucun droit MCP (il n'est jamais présenté à la passerelle
+`/mcp`) et se révoque indépendamment des autres secrets.
+
+```bash
+# Sur le VPS (génère un jeton, l'écrit dans secrets/tasks.env sans l'afficher,
+# redémarre tasks-mcp) :
+sudo bash /srv/tasks/scripts/rotation-jeton-contexte-chatgpt.sh
+
+# Puis lis-le toi-même, dans TON terminal (jamais dans un log) :
+sudo bash /srv/tasks/scripts/afficher-secret.sh contexte
+```
+
+Saisis ensuite ce jeton dans les options de l'extension.
+
+## Variables d'environnement (secrets/tasks.env — jamais dans Git)
+
+| Variable | Rôle |
+|---|---|
+| `TASKS_CONTEXT_TOKEN` | jeton Bearer « browser context writer » (absent → endpoint inerte 503) |
+| `TASKS_CONTEXT_TTL_S` | durée de validité d'un contexte, secondes (défaut 300) |
+
+`.env.example` ne contient que des placeholders (documentation).
+
+## Test manuel
+
+1. Ouvre une conversation ChatGPT (`chatgpt.com/c/<uuid>`) ; laisse l'onglet
+   visible ~5 s. Page d'options de l'extension → « Dernier envoi : réussi ».
+2. Dans ChatGPT (même conversation) : « Je regarderai ça plus tard :
+   <sujet> » → ChatGPT appelle `tasks_create`.
+3. `tasks_get` (ou l'iPhone après synchro) : les notes contiennent
+   `---\nConversation ChatGPT :\n<url>`. Le lien s'ouvre sous ton compte.
+4. Sortie de la conversation (accueil ChatGPT visible) → l'extension efface le
+   contexte : une création de tâche ultérieure n'aura **pas** de lien.
+
+## Désinstallation
+
+1. `chrome://extensions` → **Supprimer** l'extension (aucune donnée conservée
+   côté serveur : le contexte vit en mémoire et expire en 5 min).
+2. (Optionnel) révoquer le jeton : rotation (ci-dessus) ou retrait de la ligne
+   `TASKS_CONTEXT_TOKEN=` dans `secrets/tasks.env` + `systemctl restart tasks-mcp`.
+
+## Rotation du jeton
+
+`sudo bash /srv/tasks/scripts/rotation-jeton-contexte-chatgpt.sh` puis mise à
+jour du jeton dans les options de l'extension. La rotation précédente cesse
+d'être acceptée immédiatement (une seule valeur en vigueur).
+
+## Sécurité (mini threat model)
+
+| Menace | Protection |
+|---|---|
+| SSRF / URL arbitraire | validation stricte : `https://chatgpt.com/c/<id>` exactement ; http, autres hôtes, ports, query, fragments, userinfo, `/share/`, `/s/`, `/g/` rejetés |
+| Injection via titre | caractères de contrôle neutralisés (→ espaces), longueur ≤ 200, jamais interprété (texte seul dans les notes) |
+| Fuite de secrets | jeton dédié hors du code (saisi dans les options) ; jamais journalisé ; aucune clé MCP dans l'extension |
+| Endpoint public | HTTPS (duckdns), jeton ≥ 32 car. (temps constant), rate limit nginx (10 r/s) + applicatif (30/min jeton, 120/min IP), corps ≤ 4 Ko (nginx 8 Ko) |
+| Rejeu / spam | bearer + rate limits + TTL court ; le pire effet d'un abus est un lien erroné dans une note |
+| CSRF | en-tête `Authorization` + `Content-Type: application/json` → preflight obligatoire pour un site tiers ; endpoint hors CORS |
+| CORS | aucune en-tête CORS : seul le contexte d'extension (permission d'hôte accordée) peut appeler |
+| Logs | aucune URL/ID de conversation journalisée (logs nginx = chemin seul ; aucun log applicatif du corps) |
+| Permissions Chrome | `storage` + `chatgpt.com` + hôte endpoint choisi (déclarée optionnelle, demandée au premier usage) |
+| Vie privée | pas d'analytics, pas de tiers, pas de lien `share`, registre en mémoire uniquement |
+
+TTL 300 s : assez long pour couvrir une création de tâche juste après la
+demande (et le heartbeat 120 s le maintient frais pendant une session active),
+assez court pour ne jamais associer une tâche à une conversation abandonnée.
+
+## Évolution (compatibilité)
+
+Le schéma stocké est `source/url/titre/vu_le/client_id`. La V1 ne connaît que
+`source=chatgpt` ; un futur client IA n'aura qu'à publier son propre contexte
+sur le même endpoint (champ `source` ajouté sans rupture). Pas d'abstraction
+supplémentaire aujourd'hui — simple, fiable, sécurisé.
