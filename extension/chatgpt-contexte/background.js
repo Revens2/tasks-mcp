@@ -37,6 +37,7 @@ var CLE_STOCKAGE = {
   endpoint: "endpoint",
   jeton: "jeton",
   clientId: "clientId",
+  compte: "compteLabel", // « Nom de ce compte » (ex. ChatGPT principal) — non secret
   statut: "dernierStatut", // {ok, code?, raison?, a} — sans URL
 };
 
@@ -49,6 +50,7 @@ function lireConfig() {
     CLE_STOCKAGE.endpoint,
     CLE_STOCKAGE.jeton,
     CLE_STOCKAGE.clientId,
+    CLE_STOCKAGE.compte,
   ]);
 }
 
@@ -123,6 +125,7 @@ async function envoyerContexte(action) {
   var r = await poster(endpoint, jeton, {
     url: action.url,
     title: action.titre || undefined,
+    account_label: (config[CLE_STOCKAGE.compte] || "").trim() || undefined,
     client_id: idClientPersistant(config),
     onglet_id: String(action.ongletId),
     timestamp: new Date().toISOString(),

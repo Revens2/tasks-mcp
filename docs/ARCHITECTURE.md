@@ -70,10 +70,15 @@ secrets hors Git. Aucun reverse proxy ni infra parallèle ajouté.
 `tasks_recently_changed`, `tasks_history`.
 
 ### Contexte ChatGPT → lien de conversation (endpoint /context/chatgpt)
-- Une extension Chrome locale observe l'onglet ChatGPT actif (URL + titre
-  uniquement, jamais le contenu) et publie `POST /context/chatgpt` quand une
-  conversation `/c/<id>` est visible (heartbeat 120 s) ; elle efface le
-  contexte (`{"actif": false}`) quand l'onglet quitte une conversation.
+- Extension v2 : le content script ne fait que signaler les navigations SPA
+  (URL + titre, jamais le contenu) ; le service worker (cerveau.js) choisit
+  l'ONGLET PROPRIÉTAIRE = dernière conversation réellement activée
+  (`tabs.onActivated` / `windows.onFocusChanged`) et envoie un heartbeat
+  ~45 s (alarme) tant que l'onglet reste sur `/c/<id>`, même en arrière-plan.
+- **Anti-effacement croisé** : une page ChatGPT SANS conversation ne peut
+  jamais effacer le contexte d'une autre conversation. Chaque dépôt porte un
+  `onglet_id` ; l'effacement (`{"actif": false}`) n'est accepté que par
+  l'onglet propriétaire (ou, en legacy, par le client d'un dépôt sans onglet).
 - L'endpoint vit DANS tasks-mcp (127.0.0.1:8791) — même registre mémoire que
   `tasks_create`, aucune sync inter-processus — et n'est jamais exposé par la
   passerelle `/mcp` : nginx (vhost NetBird 8793 + vhost public HTTPS duckdns)
@@ -81,18 +86,23 @@ secrets hors Git. Aucun reverse proxy ni infra parallèle ajouté.
 - Auth : jeton dédié ultra-scopé `TASKS_CONTEXT_TOKEN` (aucun droit MCP,
   rotation scriptée indépendante, comparé en temps constant). Validation
   stricte de l'URL (`https://chatgpt.com/c/<id>` uniquement, jamais `/share/`),
-  titre assaini (contrôles → espaces, ≤ 200 car.), corps ≤ 4 Ko, rate limits
-  nginx + applicatifs (jeton/IP). Aucune URL/ID de conversation journalisée.
+  titre et libellé de compte assainis (contrôles → espaces, bornés), corps ≤
+  4 Ko, rate limits nginx + applicatifs (jeton/IP). Aucune URL/ID de
+  conversation journalisée.
 - Registre mémoire par `client_id` + TTL (`TASKS_CONTEXT_TTL_S`, défaut 300 s) :
-  pas d'historique de navigation. `tasks_create` ajoute aux notes
-  `---\nConversation ChatGPT :\n<url>` (titre si dispo) quand un contexte est
-  frais — best-effort, jamais d'échec ni de bloc en double, notes préservées.
+  pas d'historique de navigation. Quand un contexte est frais, `tasks_create`
+  appelle la fonction UNIQUE `contexte.composer_notes_avec_contexte` :
+  `https://chatgpt.com/c/<id>` en PREMIÈRE ligne, description préservée, puis
+  `---\nSource : ChatGPT\nCompte : <label optionnel>\nConversation : <titre>`
+  — best-effort, jamais d'échec, jamais de doublon d'URL (ancien bloc
+  « Conversation ChatGPT : » retiré si présent dans les notes fournies).
 - Réponses explicites : un dépôt valide répond `conversation_detectee:true` /
   `id_present:true` (l'ID n'est écho que si `TASKS_CONTEXT_ECHO_ID=1`, jamais
   par défaut ni loggé) ; `GET /context/chatgpt` (même jeton) expose un
-  diagnostic interne `contexte_present`/`age_s` sans URL ni ID, pour distinguer
-  « serveur accessible » de « conversation détectée » dans le test de
-  l'extension.
+  diagnostic interne `contexte_present`/`age_s`/`raison`
+  (`contexte_actif`/`contexte_expire`/`contexte_absent`) sans URL ni ID, pour
+  distinguer « serveur accessible » de « conversation détectée » dans le test
+  de l'extension.
 
 ### Modèle de tâche (normalisé, indépendant d'iCalendar)
 `id/uid, title, notes, status (needs_action/completed), completed, completed_at,

@@ -1,17 +1,26 @@
 """Contexte « conversation IA » associé aux créations de tâches.
 
-V1 : une seule source — l'extension navigateur locale qui observe la
+Une seule source en V2 : l'extension navigateur locale qui observe la
 conversation ChatGPT active et publie son URL sur `POST /context/chatgpt`
 (voir contexte_http.py). Le MCP conserve UNIQUEMENT le dernier contexte valide
 reçu par source/client, en mémoire, avec un TTL court : pas d'historique de
-navigation. Quand `tasks_create` reçoit un titre/des notes et qu'un contexte
-récent existe, un bloc `Conversation ChatGPT : …` est ajouté aux notes.
+navigation.
+
+Quand `tasks_create` dispose d'un contexte récent, la fonction UNIQUE
+`composer_notes_avec_contexte` produit les notes finales :
+
+    https://chatgpt.com/c/<id>          ← URL en PREMIÈRE ligne (tapable)
+    <description originale>
+    ---
+    Source : ChatGPT
+    Compte : <label optionnel>
+    Conversation : <titre optionnel>
 
 Sécurité :
 - URL acceptée uniquement si https://chatgpt.com/c/<id> (jamais /share/,
   jamais un autre hôte, jamais de query/fragment/userinfo, port interdit) ;
-- le titre est normalisé (contrôles retirés, espaces aplatis, borné) : il n'est
-  jamais interprété, seulement inséré comme ligne de texte dans les notes ;
+- le titre et le libellé de compte sont normalisés (contrôles retirés, espaces
+  aplatis, bornés) : jamais interprétés, seulement insérés comme texte ;
 - le timestamp du client est ignoré : `vu_le` est horodaté côté serveur ;
 - rien n'est journalisé avec l'URL ou l'identifiant de conversation.
 """
@@ -29,8 +38,13 @@ from urllib.parse import urlsplit
 # Bornes (tailles maximales volontairement très faibles).
 TAILLE_MAX_URL = 2048
 TAILLE_MAX_TITRE = 200
+TAILLE_MAX_LIBELLE = 80  # libellé de compte (ex. « ChatGPT principal »)
 TAILLE_MAX_CLIENT = 64
 TTL_DEFAUT_S = 300
+
+# Libellés d'affichage par source (la V2 ne connaît que ChatGPT ; d'autres
+# sources pourront s'ajouter sans changer la logique de composition).
+LIBELLES_SOURCE = {"chatgpt": "ChatGPT"}
 
 # Identifiant de conversation : chaîne bornée sans séparateur dangereux
 # (lettres/chiffres/tiret/souligné), longueur 8..100 — les IDs réels ChatGPT
@@ -72,6 +86,7 @@ class ContexteChatGPT:
     conversation_id: str
     source: str = "chatgpt"
     titre: str | None = None
+    account_label: str | None = None  # label de compte configuré localement (jamais un secret)
     client_id: str = "defaut"
     onglet_id: str = ""  # onglet navigateur propriétaire (anti-effacement croisé)
     vu_le: datetime | None = None  # horodaté par le serveur à l'enregistrement
@@ -145,8 +160,8 @@ def valider_url(brute: object) -> str:
     return f"https://{HOTE_AUTORISE}{CHEMIN_CONVERSATION}{bas}"
 
 
-def normaliser_titre(brut: object) -> str | None:
-    """Titre sûr pour les notes : contrôles retirés, blancs aplatis, borné.
+def _assainir_texte(brut: object, taille_max: int) -> str | None:
+    """Texte sûr pour les notes : contrôles retirés, blancs aplatis, borné.
 
     Renvoie None si absent/vide après nettoyage. Ne lève jamais.
     """
@@ -160,7 +175,18 @@ def normaliser_titre(brut: object) -> str | None:
     aplati = aplati.strip()
     if not aplati:
         return None
-    return aplati[:TAILLE_MAX_TITRE]
+    return aplati[:taille_max]
+
+
+def normaliser_titre(brut: object) -> str | None:
+    """Titre de conversation sûr pour les notes (borné à TAILLE_MAX_TITRE)."""
+    return _assainir_texte(brut, TAILLE_MAX_TITRE)
+
+
+def normaliser_libelle(brut: object) -> str | None:
+    """Libellé de compte sûr (borné à TAILLE_MAX_LIBELLE). Renvoie None si
+    absent/vide — un libellé manquant ne bloque jamais la création de tâche."""
+    return _assainir_texte(brut, TAILLE_MAX_LIBELLE)
 
 
 def _normaliser_client_id(brut: object) -> str:
@@ -186,6 +212,7 @@ def contexte_depuis_payload(payload: object) -> ContexteChatGPT:
         raise PayloadInvalide("payload_invalide", "objet JSON attendu")
     url = valider_url(payload.get("url"))
     titre = normaliser_titre(payload.get("title"))
+    account_label = normaliser_libelle(payload.get("account_label"))
     client_id = _normaliser_client_id(payload.get("client_id"))
     onglet_id = _normaliser_onglet_id(payload.get("onglet_id"))
     # Extraire l'id depuis l'URL canonique (source unique de vérité).
@@ -194,6 +221,7 @@ def contexte_depuis_payload(payload: object) -> ContexteChatGPT:
         url=url,
         conversation_id=id_conversation,
         titre=titre,
+        account_label=account_label,
         client_id=client_id,
         onglet_id=onglet_id,
     )
@@ -352,33 +380,94 @@ class RegistreContexte:
 
 
 # ---------------------------------------------------------------------------
-# Bloc « Conversation ChatGPT » ajouté aux notes
+# Composition UNIQUE des notes finales (URL en tête + pied Source/Compte/Conversation)
 # ---------------------------------------------------------------------------
 
 SEPARATEUR = "---"
-MARQUEUR = "Conversation ChatGPT :"
+
+# Formes « ancien format » éventuellement encore présentes dans des notes
+# fournies par un agent (ex. reprise d'une tâche existante) : on les retire
+# pour ne JAMAIS dupliquer l'URL. Motif : [---] “Conversation ChatGPT :”
+# [titre] URL, avec ou sans le séparateur.
+_MOTIF_URL = r"https://chatgpt\.com/c/[A-Za-z0-9_-]+"
+_MOTIF_BLOC_LEGACY = re.compile(
+    r"(?:^|\n)[ \t]*---[ \t]*\n"
+    r"[ \t]*Conversation ChatGPT[ \t]*:[^\n]*\n"
+    r"(?:(?![ \t]*https://chatgpt\.com/c/)[^\n]*\n)?"
+    r"[ \t]*" + _MOTIF_URL + r"[ \t]*(?=\n|$)",
+    re.MULTILINE,
+)
+_MOTIF_BLOC_LEGACY_SANS_SEP = re.compile(
+    r"(?:^|\n)[ \t]*Conversation ChatGPT[ \t]*:[^\n]*\n"
+    r"(?:(?![ \t]*https://chatgpt\.com/c/)[^\n]*\n)?"
+    r"[ \t]*" + _MOTIF_URL + r"[ \t]*(?=\n|$)",
+    re.MULTILINE,
+)
+_MOTIF_LIGNE_LEGACY = re.compile(r"(?im)^[ \t]*Conversation ChatGPT[ \t]*:[ \t]*\n?")
 
 
-def bloc_notes(contexte: ContexteChatGPT) -> str:
-    """Bloc texte ajouté aux notes (jamais de lien `share`)."""
-    lignes = [MARQUEUR]
-    if contexte.titre:
-        lignes.append(contexte.titre)
-    lignes.append(contexte.url)
-    return "\n".join(lignes)
+def _corps_normalise(texte: str) -> str:
+    """Réduit les blancs parasites (lignes vides répétées, extrémités) sans
+    toucher au contenu des lignes de l'utilisateur."""
+    lignes = [ln.rstrip() for ln in texte.split("\n")]
+    sortie: list[str] = []
+    vide_attendu = False
+    for ln in lignes:
+        if not ln.strip():
+            vide_attendu = True
+        else:
+            if vide_attendu and sortie and sortie[-1] != "":
+                sortie.append("")
+            vide_attendu = False
+            sortie.append(ln)
+    return "\n".join(sortie).strip()
 
 
-def notes_avec_contexte(notes: str | None, contexte: ContexteChatGPT) -> str:
-    """Ajoute le bloc aux notes sans écraser ni dupliquer.
+def _libelle_source(source: str) -> str:
+    return LIBELLES_SOURCE.get(source, source or "inconnue")
 
-    - notes existantes → notes + ``\\n\\n---\\n<bloc>`` ;
-    - pas de notes → bloc seul ;
-    - si les notes contiennent déjà l'URL de CE contexte (bloc présent),
-      elles sont rendues telles quelles (aucune duplication).
+
+def composer_notes_avec_contexte(notes: str | None, contexte: ContexteChatGPT) -> str:
+    """Notes finales d'une tâche créée avec un contexte valide (fonction UNIQUE,
+    utilisée par `tasks_create` — tous les agents obtiennent le même résultat).
+
+    Format :
+
+    ``https://chatgpt.com/c/<id>``         ← PREMIÈRE ligne, tapable côté iPhone
+
+    ``<notes originales>``                  (description préservée, jamais altérée)
+
+    ``---``
+    ``Source : ChatGPT``
+    ``Compte : <account_label>``            (omis si absent — jamais bloquant)
+    ``Conversation : <titre>``              (omis si absent)
+
+    Garanties :
+    - l'URL apparaît exactement une fois (les blocs legacy et les doublons de
+      l'URL présents dans les notes fournies sont retirés) ;
+    - les notes originales sont conservées telles quelles (hors retrait de
+      l'URL/du bloc automatique dupliqué) ;
+    - notes vides → URL + pied de page.
     """
-    bloc = bloc_notes(contexte)
+    corps = ""
     if notes:
-        if contexte.url in notes:
-            return notes
-        return f"{notes}\n\n{SEPARATEUR}\n{bloc}"
-    return bloc
+        nettoye = _MOTIF_BLOC_LEGACY.sub("\n", notes)
+        nettoye = _MOTIF_BLOC_LEGACY_SANS_SEP.sub("\n", nettoye)
+        # Doublons bruts de l'URL (ex. agent qui l'a déjà collée) : on ne la
+        # garde qu'en première ligne.
+        nettoye = nettoye.replace(contexte.url, "")
+        nettoye = _MOTIF_LIGNE_LEGACY.sub("", nettoye)
+        corps = _corps_normalise(nettoye)
+
+    lignes_pied = [SEPARATEUR, f"Source : {_libelle_source(contexte.source)}"]
+    if contexte.account_label:
+        lignes_pied.append(f"Compte : {contexte.account_label}")
+    if contexte.titre:
+        lignes_pied.append(f"Conversation : {contexte.titre}")
+    pied = "\n".join(lignes_pied)
+
+    parties = [contexte.url]
+    if corps:
+        parties.append(corps)
+    parties.append(pied)
+    return "\n\n".join(parties)

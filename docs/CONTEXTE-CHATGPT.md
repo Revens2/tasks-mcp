@@ -24,7 +24,8 @@ Registre mémoire (TTL 300 s) — {url, conversation_id, titre?, client_id, ongl
         │
 ChatGPT (n'importe où) appelle tasks_create via /mcp (flux existant inchangé)
         ▼
-tasks_create : si un contexte récent existe → notes += « ---\nConversation ChatGPT :\n… »
+tasks_create : si un contexte récent existe → composer_notes_avec_contexte
+            (URL en PREMIÈRE ligne + pied Source/Compte/Conversation)
         ▼
 Radicale (CalDAV) → synchro iPhone → Rappels affiche la note avec le lien cliquable
 ```
@@ -48,6 +49,34 @@ Points clés (v2 — corrige le bug « contexte effacé en boucle ») :
   lien plutôt que d'ajouter un mauvais lien (raison journalisée, jamais l'URL).
 - Aucun lien `chatgpt.com/share/…` n'est jamais généré ; rien n'est envoyé à un
   tiers ; aucune URL de conversation n'est journalisée.
+
+## Format des notes (v3 — URL en tête)
+
+Quand `tasks_create` dispose d'un contexte valide, les notes finales sont
+composées par la fonction UNIQUE `composer_notes_avec_contexte` :
+
+```text
+https://chatgpt.com/c/<conversation-id>
+
+<description originale de l'agent>
+
+---
+Source : ChatGPT
+Compte : <label configuré>          ← omis si non renseigné
+Conversation : <titre réel>          ← omis si indisponible
+```
+
+- L'URL est impérativement la **première ligne** : depuis Apple Rappels, un
+  toucher ouvre la conversation (critère principal).
+- La description originale n'est jamais supprimée ni altérée ; notes vides →
+  URL puis pied de page.
+- **Une seule occurrence** de l'URL : si les notes fournies contiennent déjà
+  cette URL (agent qui l'aurait collée) ou l'ancien bloc
+  « `Conversation ChatGPT :` », celui-ci est retiré avant composition — les
+  anciens rappels existants ne sont pas modifiés.
+- Le libellé de compte est un **label local configuré dans l'extension** (ex.
+  « ChatGPT principal ») — jamais de cookies, session, email ou scraping.
+  Absent → ligne omise, `tasks_create` n'est jamais bloqué.
 
 ## Mise en route pas à pas (validée le 2026-09-06)
 
@@ -77,11 +106,14 @@ ssh vps-etude "sudo bash /srv/tasks/scripts/afficher-secret.sh contexte"
 1. Clic sur l'**icône de l'extension** (ou clic droit → Options).
 2. **Endpoint** : `https://tasks-mcp.duckdns.org/context/chatgpt`
 3. **Jeton** : colle le jeton de l'étape 2.
-4. **Enregistrer** → Chrome demande la permission d'accéder à l'endpoint →
+4. **Nom de ce compte** (optionnel) : ex. « ChatGPT principal » — ce label est
+   affiché en bas du rappel (`Compte : …`). Chaque profil Brave/Chrome peut
+   avoir son propre label. Vide → la ligne `Compte :` est omise.
+5. **Enregistrer** → Chrome demande la permission d'accéder à l'endpoint →
    **Autoriser** (une seule fois).
-5. **Tester le serveur** → doit afficher 🟢 « Serveur accessible —
+6. **Tester le serveur** → doit afficher 🟢 « Serveur accessible —
    authentification valide » (transport + jeton uniquement).
-6. **Tester la conversation courante** (onglet ChatGPT visible sur
+7. **Tester la conversation courante** (onglet ChatGPT visible sur
    `chatgpt.com/c/…`) → doit afficher 🟢 « conversation détectée — ID présent —
    contexte enregistré ».
 
@@ -131,8 +163,9 @@ Dernier envoi : il y a 12 s (réussi)
 1. Ouvre une conversation ChatGPT (`chatgpt.com/c/...`), onglet visible ~5 s.
 2. Options de l'extension → « Dernier envoi : réussi ».
 3. Dans ChatGPT : « Je regarderai ça plus tard : <sujet> » → la tâche est créée.
-4. iPhone → Rappels → Inbox : la note contient
-   `---\nConversation ChatGPT :\nhttps://chatgpt.com/c/<id>` ; le lien s'ouvre
+4. iPhone → Rappels → Inbox : la note commence par
+   `https://chatgpt.com/c/<id>` (première ligne, tapable) puis la description,
+   puis `---\nSource : ChatGPT\nCompte : …\nConversation : …` ; le lien s'ouvre
    sous ton compte.
 
 ## Dépannage
@@ -151,9 +184,9 @@ Dernier envoi : il y a 12 s (réussi)
 
 | Fichier (dépôt tasks-mcp) | Rôle |
 |---|---|
-| `src/tasks_mcp/contexte.py` | validation stricte URL/titre, registre mémoire TTL, bloc de notes |
-| `src/tasks_mcp/contexte_http.py` | endpoint ASGI `POST /context/chatgpt` (jeton, rate limit, taille) |
-| `src/tasks_mcp/outils.py` | `tasks_create` : ajout best-effort du bloc si contexte récent |
+| `src/tasks_mcp/contexte.py` | validation stricte URL/titre/libellé, registre mémoire TTL, `composer_notes_avec_contexte` (URL 1re ligne + pied) |
+| `src/tasks_mcp/contexte_http.py` | endpoint ASGI `POST /context/chatgpt` (jeton, rate limit, taille, effacement par onglet propriétaire) |
+| `src/tasks_mcp/outils.py` | `tasks_create` : appel best-effort à `composer_notes_avec_contexte` si contexte récent |
 | `deploy/nginx/tasks-mcp.conf` | vhost NetBird : `location = /context/chatgpt` → upstream 8791 |
 | `deploy/nginx/tasks-mcp-public.conf` | vhost public HTTPS (duckdns) : même location |
 | `scripts/rotation-jeton-contexte-chatgpt.sh` | rotation du jeton contexte |
@@ -175,6 +208,7 @@ contexte ne peut rien faire d'autre que déposer/effacer ce contexte.
    - **Endpoint** : `https://tasks-mcp.duckdns.org/context/chatgpt`
      (ou `http://10.200.114.203:8793/context/chatgpt` en NetBird-only) ;
    - **Jeton** : le « browser context writer » (voir plus bas).
+   - **Nom de ce compte** (optionnel) : label affiché en bas du rappel.
    - **Enregistrer** (Chrome demande alors la permission d'accéder à l'endpoint
      choisi — c'est la seule permission d'hôte supplémentaire demandée).
 5. **Tester la connexion** dans la page d'options : `HTTP 200` attendu.
@@ -216,7 +250,9 @@ Saisis ensuite ce jeton dans les options de l'extension.
 
 - `POST` avec URL de conversation valide → `200` : `{"statut": "ok",
   "conversation_detectee": true, "id_present": true, "ttl_s": 300}`
-  (+ `conversation_id` seulement si `TASKS_CONTEXT_ECHO_ID=1`).
+  (+ `conversation_id` seulement si `TASKS_CONTEXT_ECHO_ID=1`). Champs
+  acceptés du corps : `url` (requis), `title`, `account_label` (label de
+  compte local, optionnel), `client_id`, `onglet_id`.
 - `POST` `{"actif": false, "client_id": …, "onglet_id": …}` → `200` :
   `{"statut": "ok", "efface": n}`. L'effacement n'est accepté que si
   `onglet_id` correspond à l'onglet qui a déposé le contexte (sinon `0`) :
@@ -239,8 +275,9 @@ Saisis ensuite ce jeton dans les options de l'extension.
    visible ~5 s. Page d'options de l'extension → « Dernier envoi : réussi ».
 2. Dans ChatGPT (même conversation) : « Je regarderai ça plus tard :
    <sujet> » → ChatGPT appelle `tasks_create`.
-3. `tasks_get` (ou l'iPhone après synchro) : les notes contiennent
-   `---\nConversation ChatGPT :\n<url>`. Le lien s'ouvre sous ton compte.
+3. `tasks_get` (ou l'iPhone après synchro) : les notes commencent par
+   `https://chatgpt.com/c/<url>` puis `---\nSource : ChatGPT\nCompte : …`
+   et `Conversation : …`. Le lien s'ouvre sous ton compte.
 4. Ferme l'onglet de la conversation (ou navigue son onglet vers l'accueil) →
    le contexte est effacé : une création de tâche ultérieure n'aura **pas** de
    lien. Une page accueil ouverte dans un AUTRE onglet n'efface rien.
@@ -273,16 +310,18 @@ d'être acceptée immédiatement (une seule valeur en vigueur).
 | CSRF | en-tête `Authorization` + `Content-Type: application/json` → preflight obligatoire pour un site tiers ; endpoint hors CORS |
 | CORS | aucune en-tête CORS : seul le contexte d'extension (permission d'hôte accordée) peut appeler |
 | Logs | aucune URL/ID de conversation journalisée (logs nginx = chemin seul ; aucun log applicatif du corps) |
-| Permissions Chrome | `storage` + `chatgpt.com` + hôte endpoint choisi (déclarée optionnelle, demandée au premier usage) |
+| Permissions Chrome | `storage` + `alarms` + `chatgpt.com` + hôte endpoint choisi (déclaré optionnel, demandé au premier usage) ; aucun accès cookies/historique/contenu |
 | Vie privée | pas d'analytics, pas de tiers, pas de lien `share`, registre en mémoire uniquement |
 
 TTL 300 s : assez long pour couvrir une création de tâche juste après la
-demande (et le heartbeat 120 s le maintient frais pendant une session active),
-assez court pour ne jamais associer une tâche à une conversation abandonnée.
+demande (et le heartbeat ~45 s du worker le maintient frais pendant une session
+active), assez court pour ne jamais associer une tâche à une conversation
+abandonnée.
 
 ## Évolution (compatibilité)
 
-Le schéma stocké est `source/url/titre/vu_le/client_id`. La V1 ne connaît que
-`source=chatgpt` ; un futur client IA n'aura qu'à publier son propre contexte
-sur le même endpoint (champ `source` ajouté sans rupture). Pas d'abstraction
-supplémentaire aujourd'hui — simple, fiable, sécurisé.
+Le schéma stocké est `source/url/titre/account_label/vu_le/client_id/onglet_id`.
+Seule `source=chatgpt` existe aujourd'hui ; un futur client IA n'aura qu'à
+publier son propre contexte sur le même endpoint (champs `source` et
+`LIBELLES_SOURCE` étendus sans rupture). Pas d'abstraction supplémentaire
+aujourd'hui — simple, fiable, sécurisé.

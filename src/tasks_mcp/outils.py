@@ -101,7 +101,9 @@ def _notes_avec_contexte_recent(service: Service, notes: str | None) -> str | No
             raison = registre.raison(ttl_s=ttl_effectif)
             journal.info("tasks_create : tâche créée sans lien de conversation (raison=%s)", raison)
             return notes
-        return contexte.notes_avec_contexte(notes, actuel)
+        # Composition UNIQUE des notes (URL en première ligne + pied de page
+        # Source/Compte/Conversation) — même résultat pour tous les agents.
+        return contexte.composer_notes_avec_contexte(notes, actuel)
     except Exception:  # noqa: BLE001 - jamais bloquer la création de tâche
         journal.debug("tasks_create : enrichissement contexte indisponible", exc_info=True)
         return notes
