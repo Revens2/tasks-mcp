@@ -5,7 +5,12 @@ Couvre le contrat que ChatGPT/claude.ai exigent :
 - enregistrement dynamique (RFC 7591) ;
 - consentement humain (phrase de passe) puis echange du code (PKCE S256) ;
 - /mcp anonyme -> 401 avec resource_metadata ;
-- /mcp avec jeton -> proxy transparent vers l'upstream, outils filtres.
+- /mcp avec jeton -> proxy vers l'upstream, autorisation outil par outil :
+    * jeton `tasks:lecture` : outils de lecture uniquement, aucune mutation,
+      meme en forgeant directement `tools/call` ;
+    * jeton `tasks:lecture tasks:ecriture` : lecture + ecriture ;
+    * outil inconnu ou non classe : fail-closed ;
+    * un en-tete client forge n'elargit jamais les droits (seul le jeton compte).
 """
 
 from __future__ import annotations
@@ -22,15 +27,19 @@ import httpx
 import pytest
 import uvicorn
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from tasks_gateway.app import construire_application
 from tasks_gateway.oauth import PORTEE, hacher_phrase
+from tasks_gateway.politique import OUTILS_ECRITURE, OUTILS_LECTURE, PolitiqueOutils
 
 EMETTEUR = "https://tasks.example.test"
-JETON_STATIQUE = "j" * 40
+JETON_LECTURE = "l" * 40
+JETON_ECRITURE = "e" * 40
 PHRASE = "phrase-de-test-2026"
+SCOPES_LECTURE = "tasks:lecture"
+SCOPES_ECRITURE = "tasks:lecture tasks:ecriture"
 
 
 def _normaliser_issuer(valeur: str) -> str:
@@ -42,17 +51,23 @@ def environ(tmp_path, monkeypatch):
     monkeypatch.setenv("TASKS_MCP_ISSUER", EMETTEUR)
     monkeypatch.setenv("TASKS_MCP_UPSTREAM", "http://127.0.0.1:9")  # port ferme
     monkeypatch.setenv("TASKS_MCP_OAUTH_DIR", str(tmp_path))
-    monkeypatch.setenv("TASKS_MCP_TOKEN", JETON_STATIQUE)
+    monkeypatch.setenv("TASKS_MCP_TOKEN", JETON_ECRITURE)
     monkeypatch.setenv("TASKS_MCP_CONSENT_HASH", hacher_phrase(PHRASE))
     return tmp_path
 
 
-def _client() -> httpx.AsyncClient:
-    app = construire_application()
+def _app(jeton: str, portees: str):
+    """Application construite pour un jeton statique portant exactement `portees`."""
+    os.environ["TASKS_MCP_TOKEN_SCOPES"] = portees
+    return construire_application(jeton_statique=jeton)
+
+
+def _client(jeton: str, portees: str) -> httpx.AsyncClient:
+    app = _app(jeton, portees)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=EMETTEUR)
 
 
-def _json_rpc(methode: str, identifiant: int, params: dict | None = None) -> bytes:
+def _json_rpc(methode: str, identifiant: int | None, params: dict | None = None) -> bytes:
     return json.dumps(
         {
             "jsonrpc": "2.0",
@@ -78,7 +93,7 @@ def _courir(coro):
 # --- Decouverte -----------------------------------------------------------------------
 def test_metadonnees_serveur_autorisation(environ):
     async def _t():
-        async with _client() as c:
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             r = await c.get("/.well-known/oauth-authorization-server")
             assert r.status_code == 200
             d = r.json()
@@ -94,7 +109,7 @@ def test_metadonnees_serveur_autorisation(environ):
 
 def test_metadonnees_ressource_protegee(environ):
     async def _t():
-        async with _client() as c:
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             r = await c.get("/.well-known/oauth-protected-resource/mcp")
             assert r.status_code == 200
             d = r.json()
@@ -108,7 +123,7 @@ def test_metadonnees_ressource_protegee(environ):
 # --- Acces /mcp sans jeton -------------------------------------------------------------
 def test_mcp_anonyme_refuse_post(environ):
     async def _t():
-        async with _client() as c:
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             r = await c.post(
                 "/mcp",
                 content=_json_rpc("initialize", 1),
@@ -122,7 +137,7 @@ def test_mcp_anonyme_refuse_post(environ):
 
 def test_mcp_anonyme_refuse_get(environ):
     async def _t():
-        async with _client() as c:
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             r = await c.get("/mcp")
             assert r.status_code == 401
 
@@ -131,7 +146,7 @@ def test_mcp_anonyme_refuse_get(environ):
 
 def test_mcp_chemin_inconnu(environ):
     async def _t():
-        async with _client() as c:
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             r = await c.get("/")
             assert r.status_code == 404
 
@@ -141,7 +156,7 @@ def test_mcp_chemin_inconnu(environ):
 # --- Enregistrement + consentement + token --------------------------------------------
 def test_flux_oauth_complet(environ):
     async def _t():
-        async with _client() as c:
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             # 1. Enregistrement dynamique (RFC 7591)
             r = await c.post(
                 "/register",
@@ -232,40 +247,63 @@ def test_flux_oauth_complet(environ):
     _courir(_t())
 
 
-# --- Jeton statique CLI + proxy -------------------------------------------------------
-def _serveur_stub() -> tuple[uvicorn.Server, str, object]:
-    """Upstream factice : initialize avec session, tools/list avec manage-accounts."""
+# --- Jeton statique + proxy + politique -----------------------------------------------
+# Outils de l'upstream tels que decouverts en live (2026-09-06).
+_OUTILS_UPSTREAM = sorted(OUTILS_LECTURE | OUTILS_ECRITURE | {"outil-upstream-inconnu"})
+
+
+def _serveur_stub(outils: list[str] | None = None) -> tuple[uvicorn.Server, str, object, list]:
+    """Upstream factice : initialize/session, tools/list, tools/call comptabilises.
+
+    Retourne (serveur, url, socket, recus) ou `recus` recoit chaque tools/call
+    relaye par le proxy : {"name": ..., "id": ...}.
+    """
     import socket
     import time
 
+    recus: list[dict] = []
+
     async def _post(request):
+        def _reponse(donnees, session):
+            """Repond en SSE (comme l'upstream reel 2.6.3) quand le client ne demande
+            que text/event-stream, sinon en JSON nu."""
+            accept = request.headers.get("accept", "")
+            if "text/event-stream" in accept and "application/json" not in accept:
+                corps = "event: message\ndata: " + json.dumps(donnees, ensure_ascii=False) + "\n\n"
+                return Response(corps, media_type="text/event-stream", headers={"mcp-session-id": session})
+            return JSONResponse(donnees, headers={"mcp-session-id": session})
+
         corps = await request.body()
         donnees = json.loads(corps)
         methode = donnees.get("method")
         id_ = donnees.get("id")
+        session = request.headers.get("mcp-session-id", "")
         if methode == "initialize":
-            return JSONResponse(
-                {"jsonrpc": "2.0", "id": id_, "result": {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "google-calendar", "version": "2.6.3"}}},
-                headers={"mcp-session-id": str(uuid.uuid4())},
+            return _reponse(
+                {"jsonrpc": "2.0", "id": id_, "result": {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "tasks-mcp", "version": "test"}}},
+                str(uuid.uuid4()),
             )
         if methode == "tools/list":
-            return JSONResponse(
+            return _reponse(
                 {
                     "jsonrpc": "2.0",
                     "id": id_,
                     "result": {
                         "tools": [
-                            {"name": "manage-accounts", "description": "admin"},
-                            {"name": "list-events", "description": "liste"},
+                            {"name": nom, "description": nom} for nom in (outils or _OUTILS_UPSTREAM)
                         ]
                     },
                 },
-                headers={"mcp-session-id": request.headers.get("mcp-session-id", "")},
+                session,
             )
-        return JSONResponse(
-            {"jsonrpc": "2.0", "id": id_, "result": {"content": [{"type": "text", "text": "ok"}]}},
-            headers={"mcp-session-id": request.headers.get("mcp-session-id", "")},
-        )
+        if methode == "tools/call":
+            params = donnees.get("params") or {}
+            recus.append({"name": params.get("name"), "id": id_})
+            return _reponse(
+                {"jsonrpc": "2.0", "id": id_, "result": {"content": [{"type": "text", "text": "ok"}]}},
+                session,
+            )
+        return _reponse({"jsonrpc": "2.0", "id": id_, "result": {}}, session)
 
     app = Starlette(routes=[Route("/mcp", _post, methods=["POST"])])
     socket_ecoute = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -281,53 +319,304 @@ def _serveur_stub() -> tuple[uvicorn.Server, str, object]:
         if serveur.started:
             break
         time.sleep(0.02)
-    return serveur, f"http://127.0.0.1:{port}", socket_ecoute
+    return serveur, f"http://127.0.0.1:{port}", socket_ecoute, recus
 
 
-def test_proxy_initialize_et_verbatim(environ):
-    """V1 tasks : aucun outil masqué (CRUD complet pour tout client authentifié).
+def _entetes_autorises(jeton: str) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "Authorization": f"Bearer {jeton}",
+    }
 
-    Les outils annoncés par l'upstream passent tels quels ; le mécanisme de filtrage
-    reste disponible pour de futures politiques (lecture seule, interdiction de
-    suppression) mais n'est pas actif.
-    """
+
+def test_initialize_et_session_relayees_pour_lecture(environ):
+    """Un jeton lecture seule peut initialize : la session upstream est relayee."""
 
     async def _t():
-        serveur, url, _socket_ecoute = _serveur_stub()
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
         try:
             os.environ["TASKS_MCP_UPSTREAM"] = url
-            app = construire_application()
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=EMETTEUR) as c:
-                entetes = {
-                    "Content-Type": "application/json",
-                    "Accept": "application/json, text/event-stream",
-                    "Authorization": f"Bearer {JETON_STATIQUE}",
-                }
-                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
-                assert r.status_code == 200, r.text
-                # la session creee par l'upstream est relayee telle quelle
-                assert r.headers.get("mcp-session-id")
-                session = r.headers["mcp-session-id"]
-
+            async with _client(JETON_LECTURE, SCOPES_LECTURE) as c:
                 r = await c.post(
-                    "/mcp",
-                    content=_json_rpc("tools/list", 2),
-                    headers={**entetes, "mcp-session-id": session},
+                    "/mcp", content=_json_rpc("initialize", 1), headers=_entetes_autorises(JETON_LECTURE)
                 )
-                assert r.status_code == 200
-                outils = [t["name"] for t in r.json()["result"]["tools"]]
-                # aucun outil retiré en V1
-                assert "manage-accounts" in outils
-                assert "list-events" in outils
+                assert r.status_code == 200, r.text
+                assert r.headers.get("mcp-session-id")
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
 
-                # call_tool passe verbatim
+    _courir(_t())
+
+
+def test_lecture_seul_peut_appeler_outil_lecture(environ):
+    """Lecture : un outil de lecture est relaye jusqu'a l'upstream."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_LECTURE, SCOPES_LECTURE) as c:
+                entetes = _entetes_autorises(JETON_LECTURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
                 r = await c.post(
                     "/mcp",
-                    content=_json_rpc("tools/call", 3, {"name": "list-events", "arguments": {}}),
+                    content=_json_rpc("tools/call", 3, {"name": "tasks_list", "arguments": {}}),
                     headers={**entetes, "mcp-session-id": session},
                 )
                 assert r.status_code == 200
                 assert "ok" in r.text
+                assert [a["name"] for a in recus] == ["tasks_list"]
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
+
+    _courir(_t())
+
+
+@pytest.mark.parametrize("outil", sorted(OUTILS_ECRITURE))
+def test_lecture_seul_refuse_toute_mutation(environ, outil):
+    """P0 : un jeton tasks:lecture ne peut executer AUCUNE mutation, meme en
+    forgeant directement tools/call avec le nom exact d'un outil d'ecriture.
+    L'upstream ne doit jamais recevoir la requete."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_LECTURE, SCOPES_LECTURE) as c:
+                entetes = _entetes_autorises(JETON_LECTURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
+                r = await c.post(
+                    "/mcp",
+                    content=_json_rpc("tools/call", 7, {"name": outil, "arguments": {}}),
+                    headers={**entetes, "mcp-session-id": session},
+                )
+                assert r.status_code == 200
+                corps = r.json()
+                assert "error" in corps, f"mutation {outil} non refusee: {corps}"
+                assert corps["error"]["code"] == -32000
+                assert "ecriture" in corps["error"]["message"] or "interdit" in corps["error"]["message"]
+                assert recus == [], f"l'upstream a recu un appel interdit: {recus}"
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
+
+    _courir(_t())
+
+
+def _reponse_json_rpc(r: httpx.Response) -> dict:
+    """Parse une reponse MCP : JSON nu ou enveloppe SSE."""
+    if "text/event-stream" in r.headers.get("content-type", ""):
+        blocs = [
+            ligne[len("data: "):]
+            for ligne in r.text.splitlines()
+            if ligne.startswith("data: ")
+        ]
+        return json.loads("".join(blocs))
+    return r.json()
+
+
+def test_lecture_seul_liste_filtre_aussi_en_sse(environ):
+    """Le filtre tools/list s'applique aussi quand l'upstream repond en SSE
+    (comportement reel de l'upstream v2.6.3)."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_LECTURE, SCOPES_LECTURE) as c:
+                entetes = _entetes_autorises(JETON_LECTURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
+                entetes_sse = {**entetes, "Accept": "text/event-stream", "mcp-session-id": session}
+                r = await c.post("/mcp", content=_json_rpc("tools/list", 2), headers=entetes_sse)
+                assert r.status_code == 200
+                assert "text/event-stream" in r.headers.get("content-type", "")
+                noms = {t["name"] for t in _reponse_json_rpc(r)["result"]["tools"]}
+                assert noms == set(OUTILS_LECTURE), noms
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
+
+    _courir(_t())
+
+
+def test_lecture_seul_liste_uniquement_les_outils_lecture(environ):
+    """P0 : tools/list pour un jeton lecture seule n'annonce aucun outil d'ecriture
+    (ni les outils inconnus de l'upstream)."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_LECTURE, SCOPES_LECTURE) as c:
+                entetes = _entetes_autorises(JETON_LECTURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
+                r = await c.post(
+                    "/mcp", content=_json_rpc("tools/list", 2), headers={**entetes, "mcp-session-id": session}
+                )
+                assert r.status_code == 200
+                noms = {t["name"] for t in r.json()["result"]["tools"]}
+                assert noms == set(OUTILS_LECTURE), noms
+                assert not (noms & set(OUTILS_ECRITURE))
+                assert "outil-upstream-inconnu" not in noms
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
+
+    _courir(_t())
+
+
+@pytest.mark.parametrize("outil", sorted(OUTILS_ECRITURE))
+def test_ecriture_peut_appeler_outil_ecriture(environ, outil):
+    """Un jeton lecture+ecriture peut executer une mutation (relayee a l'upstream)."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+                entetes = _entetes_autorises(JETON_ECRITURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
+                r = await c.post(
+                    "/mcp",
+                    content=_json_rpc("tools/call", 7, {"name": outil, "arguments": {}}),
+                    headers={**entetes, "mcp-session-id": session},
+                )
+                assert r.status_code == 200
+                assert "ok" in r.text
+                assert [a["name"] for a in recus] == [outil]
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
+
+    _courir(_t())
+
+
+def test_ecriture_liste_lecture_et_ecriture_mais_pas_inconnu(environ):
+    """Un jeton full voit lecture+ecriture ; les outils inconnus restent caches."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+                entetes = _entetes_autorises(JETON_ECRITURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
+                r = await c.post(
+                    "/mcp", content=_json_rpc("tools/list", 2), headers={**entetes, "mcp-session-id": session}
+                )
+                assert r.status_code == 200
+                noms = {t["name"] for t in r.json()["result"]["tools"]}
+                assert noms == set(OUTILS_LECTURE) | set(OUTILS_ECRITURE), noms
+                assert "outil-upstream-inconnu" not in noms
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
+
+    _courir(_t())
+
+
+def test_outil_inconnu_fail_closed_meme_avec_ecriture(environ):
+    """Un outil non classe (inconnu de la politique) est refuse, meme avec un jeton full."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+                entetes = _entetes_autorises(JETON_ECRITURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
+                r = await c.post(
+                    "/mcp",
+                    content=_json_rpc("tools/call", 9, {"name": "outil-upstream-inconnu", "arguments": {}}),
+                    headers={**entetes, "mcp-session-id": session},
+                )
+                assert r.status_code == 200
+                corps = r.json()
+                assert "error" in corps
+                assert corps["error"]["code"] == -32000
+                assert recus == [], "l'upstream ne doit pas recevoir un outil inconnu"
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
+
+    _courir(_t())
+
+
+def test_headers_clients_forges_sans_effet(environ):
+    """Un client ne peut pas s'octroyer la portee d'ecriture par un en-tete :
+    seul le jeton valide par le gateway fait foi."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_LECTURE, SCOPES_LECTURE) as c:
+                entetes = _entetes_autorises(JETON_LECTURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
+                r = await c.post(
+                    "/mcp",
+                    content=_json_rpc("tools/call", 11, {"name": "tasks_create", "arguments": {}}),
+                    headers={
+                        **entetes,
+                        "mcp-session-id": session,
+                        "x-tasks-mcp-scopes": "tasks:ecriture",
+                        "x-tasks-mcp-mode": "oauth",
+                        "x-tasks-mcp-acteur": "tasks-mcp-cli-statique",
+                    },
+                )
+                assert r.status_code == 200
+                corps = r.json()
+                assert "error" in corps
+                assert recus == [], "l'en-tete forge ne doit pas elargir les droits"
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
+
+    _courir(_t())
+
+
+def test_batch_jsonrpc_refuse(environ):
+    """Un corps JSON-RPC par lot est refuse en bloc (jamais relaye)."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
+                entetes = _entetes_autorises(JETON_ECRITURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
+                lot = json.dumps(
+                    [
+                        {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "tasks_list", "arguments": {}}},
+                        {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "tasks_create", "arguments": {}}},
+                    ]
+                ).encode()
+                r = await c.post("/mcp", content=lot, headers={**entetes, "mcp-session-id": session})
+                assert r.status_code == 200
+                corps = r.json()
+                assert "error" in corps
+                assert recus == [], "aucun element du lot ne doit etre relaye"
         finally:
             serveur.should_exit = True
             if _socket_ecoute:
@@ -338,14 +627,14 @@ def test_proxy_initialize_et_verbatim(environ):
 
 def test_proxy_upstream_indisponible(environ):
     async def _t():
-        async with _client() as c:
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             r = await c.post(
                 "/mcp",
                 content=_json_rpc("initialize", 1),
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "application/json, text/event-stream",
-                    "Authorization": f"Bearer {JETON_STATIQUE}",
+                    "Authorization": f"Bearer {JETON_ECRITURE}",
                 },
             )
             assert r.status_code == 502
@@ -353,32 +642,28 @@ def test_proxy_upstream_indisponible(environ):
     _courir(_t())
 
 
-def test_filtrage_sset_json(environ):
-    """Le filtre tools/list fonctionne en JSON nu et en enveloppe SSE (upstream v2.6.3)."""
-    from tasks_gateway.upstream import ProxyMCP
+def test_politique_visible_et_refus(environ):
+    """Tests unitaires de la politique (sans HTTP)."""
+    politique = PolitiqueOutils()
+    lecture = {politique.portee_lecture}
+    full = {politique.portee_lecture, politique.portee_ecriture}
 
-    proxy = ProxyMCP("http://127.0.0.1:9", outils_retires={"manage-accounts"})
-    outils = [
-        {"name": "manage-accounts", "description": "admin"},
-        {"name": "list-events", "description": "liste"},
-    ]
-    # JSON nu
-    corps = json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": outils}}).encode()
-    filtre = proxy.filtrer(corps, "application/json")
-    noms = [t["name"] for t in json.loads(filtre)["result"]["tools"]]
-    assert noms == ["list-events"]
-    # Enveloppe SSE
-    sse = ("event: message\ndata: " + json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"tools": outils}}) + "\n\n").encode()
-    filtre = proxy.filtrer(sse, "text/event-stream")
-    assert b"manage-accounts" not in filtre
-    assert b"list-events" in filtre
-    # Corps sans outils : inchange
-    assert proxy.filtrer(sse.replace(b"manage-accounts", b"x"), "text/event-stream") == sse.replace(b"manage-accounts", b"x")
+    # visibilite
+    assert politique.visibles(lecture) == set(OUTILS_LECTURE)
+    assert politique.visibles(full) == set(OUTILS_LECTURE) | set(OUTILS_ECRITURE)
+    assert politique.visibles(set()) == set()
+
+    # appels
+    assert politique.autoriser_call("tasks_list", lecture) is None
+    assert politique.autoriser_call("tasks_create", lecture) is not None
+    assert politique.autoriser_call("tasks_create", full) is None
+    assert politique.autoriser_call("nimporte-quoi", full) is not None
+    assert politique.autoriser_call("nimporte-quoi", lecture) is not None
 
 
 def test_sante(environ):
     async def _t():
-        async with _client() as c:
+        async with _client(JETON_ECRITURE, SCOPES_ECRITURE) as c:
             r = await c.get("/health")
             assert r.status_code == 200
             assert r.json()["status"] == "ok"
