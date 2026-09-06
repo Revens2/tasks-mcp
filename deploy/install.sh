@@ -19,8 +19,12 @@ install -m 755 "$RACINE/scripts/tasks_restore.sh" /usr/local/bin/tasks_restore.s
 echo "== nginx =="
 install -m 644 "$RACINE/deploy/nginx/caldav-tasks.conf" /etc/nginx/sites-available/caldav-tasks
 install -m 644 "$RACINE/deploy/nginx/tasks-mcp.conf" /etc/nginx/sites-available/tasks-mcp
+# Vhost public ChatGPT (phase 2, duckdns + Let's Encrypt) : installé lui aussi
+# depuis le dépôt pour rester synchronisé avec les locations /context/chatgpt.
+install -m 644 "$RACINE/deploy/nginx/tasks-mcp-public.conf" /etc/nginx/sites-available/tasks-mcp-public.conf
 ln -sfn /etc/nginx/sites-available/caldav-tasks /etc/nginx/sites-enabled/caldav-tasks
 ln -sfn /etc/nginx/sites-available/tasks-mcp /etc/nginx/sites-enabled/tasks-mcp
+ln -sfn /etc/nginx/sites-available/tasks-mcp-public.conf /etc/nginx/sites-enabled/tasks-mcp-public.conf
 nginx -t
 
 echo "== services =="
