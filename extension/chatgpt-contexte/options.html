@@ -13,6 +13,7 @@
       #tests { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
       #tests button { flex: 1; min-width: 160px; }
       #statut { margin-top: 10px; white-space: pre-wrap; font-size: 12px; line-height: 1.45; }
+      #vue { margin-top: 10px; white-space: pre-wrap; font-size: 12px; line-height: 1.5; background: #f6f8fa; border: 1px solid #e2e4e8; border-radius: 6px; padding: 8px; }
       .aide { color: #777; font-size: 11px; margin-top: 10px; line-height: 1.45; }
       code { background: #f0f0f0; padding: 0 3px; }
     </style>
@@ -37,6 +38,7 @@
     </div>
 
     <div id="statut"></div>
+    <div id="vue"></div>
 
     <div class="aide">
       <b>Deux tests différents :</b><br />
@@ -45,6 +47,10 @@
       doit être une conversation <code>chatgpt.com/c/…</code> ; l'URL réelle est
       envoyée puis le stockage est confirmé. Un serveur accessible n'implique
       <b>pas</b> qu'une conversation soit détectée.<br /><br />
+      La conversation référencée est celle du <b>dernier onglet conversation
+      activé</b>, rafraîchie automatiquement (heartbeat ~45 s) tant que cet
+      onglet reste ouvert sur <code>/c/…</code> — même en arrière-plan. Une page
+      ChatGPT sans conversation (accueil…) n'efface jamais ce contexte.
       L'extension ne lit que l'URL et le titre des onglets <code>chatgpt.com</code>
       (jamais le contenu) et ne stocke aucune URL. Voir
       <code>docs/CONTEXTE-CHATGPT.md</code> du dépôt tasks-mcp.

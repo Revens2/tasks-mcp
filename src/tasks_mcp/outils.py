@@ -10,11 +10,14 @@ Les valeurs de dates renvoyées sont en Europe/Paris avec décalage (ex. +02:00)
 from __future__ import annotations
 
 import json
+import logging
 from typing import Annotated, Optional
 
 from pydantic import Field
 
 from . import acteur, contexte, temps
+
+journal = logging.getLogger("tasks_mcp.outils")
 from .caldav import ErreurCalDAV
 from .model import Tache, cle_tri, correspond, est_en_retard
 from .service import ConflitModification, Introuvable, ListeInconnue, Service
@@ -87,13 +90,20 @@ def _notes_avec_contexte_recent(service: Service, notes: str | None) -> str | No
     try:
         registre = getattr(service, "contexte_registre", None)
         if registre is None:
+            journal.debug("tasks_create : pas de lien de conversation (raison=registre_absent)")
             return notes
         ttl = int(getattr(service.config, "contexte_ttl_s", 0) or 0)
-        actuel = registre.dernier_valide(ttl_s=ttl if ttl > 0 else contexte.TTL_DEFAUT_S)
+        ttl_effectif = ttl if ttl > 0 else contexte.TTL_DEFAUT_S
+        actuel = registre.dernier_valide(ttl_s=ttl_effectif)
         if actuel is None:
+            # Raison interne (diagnostic, aucun contenu, aucune URL) : permet de
+            # savoir POURQUOI le lien n'a pas été ajouté sans lire de logs sensibles.
+            raison = registre.raison(ttl_s=ttl_effectif)
+            journal.info("tasks_create : tâche créée sans lien de conversation (raison=%s)", raison)
             return notes
         return contexte.notes_avec_contexte(notes, actuel)
     except Exception:  # noqa: BLE001 - jamais bloquer la création de tâche
+        journal.debug("tasks_create : enrichissement contexte indisponible", exc_info=True)
         return notes
 
 

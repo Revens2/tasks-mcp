@@ -173,18 +173,23 @@ def test_get_diagnostic_avant_puis_apres_depot():
             assert r.status_code == 200
             d = r.json()
             assert d["contexte_present"] is False
+            assert d["id_present"] is False
             assert d["age_s"] is None
+            assert d["raison"] == "contexte_absent"
+            assert d["dernier_depot_s"] is None
             assert d["ttl_s"] == 300
             for cle in ("url", "conversation_id", "title"):
                 assert cle not in d
 
             # Après dépôt d'une conversation valide : contexte présent, âge >= 0.
-            r = await c.post(CHEMIN, json={"url": URL}, headers=_entetes())
+            r = await c.post(CHEMIN, json={"url": URL, "client_id": "chrome", "onglet_id": "tab42"}, headers=_entetes())
             assert r.status_code == 200
             r = await c.get(CHEMIN, headers=_entetes())
             assert r.status_code == 200
             d = r.json()
             assert d["contexte_present"] is True
+            assert d["id_present"] is True
+            assert d["raison"] == "contexte_actif"
             assert d["age_s"] >= 0
             assert "url" not in d and "conversation_id" not in d
 
@@ -260,15 +265,70 @@ def test_rate_limit_par_jeton_429():
 
 
 def test_actif_false_efface_le_contexte():
+    """Le propriétaire de l'onglet peut effacer son propre contexte."""
+    registre = RegistreContexte()
+    app, _ = _app(registre=registre)
+
+    async def _t():
+        async with _client(app) as c:
+            dep = await c.post(
+                CHEMIN, json={"url": URL, "client_id": "abc", "onglet_id": "tab42"}, headers=_entetes()
+            )
+            assert dep.status_code == 200
+            assert registre.dernier_valide() is not None
+            r = await c.post(
+                CHEMIN, json={"actif": False, "client_id": "abc", "onglet_id": "tab42"}, headers=_entetes()
+            )
+            assert r.status_code == 200
+            assert r.json() == {"statut": "ok", "efface": 1}
+            assert registre.dernier_valide() is None
+
+    _courir(_t())
+
+
+def test_actif_false_onglet_tiers_nefface_pas():
+    """RÉGRESSION (cause racine du bug live) : une page ChatGPT sans
+    conversation (accueil) qui envoie `actif:false` ne peut PAS effacer le
+    contexte déposé par l'onglet de la conversation — même avec le bon
+    client_id partagé."""
+    registre = RegistreContexte()
+    app, _ = _app(registre=registre)
+
+    async def _t():
+        async with _client(app) as c:
+            dep = await c.post(
+                CHEMIN, json={"url": URL, "client_id": "chrome", "onglet_id": "tab-conversation"}, headers=_entetes()
+            )
+            assert dep.status_code == 200
+            # Onglet différent (accueil), même client_id : refusé.
+            r1 = await c.post(
+                CHEMIN, json={"actif": False, "client_id": "chrome", "onglet_id": "tab-accueil"}, headers=_entetes()
+            )
+            assert r1.status_code == 200
+            assert r1.json() == {"statut": "ok", "efface": 0}
+            # Effacement sans identité d'onglet : refusé aussi.
+            r2 = await c.post(CHEMIN, json={"actif": False, "client_id": "chrome"}, headers=_entetes())
+            assert r2.status_code == 200
+            assert r2.json() == {"statut": "ok", "efface": 0}
+            # Sans client_id : aucun effet global.
+            r3 = await c.post(CHEMIN, json={"actif": False}, headers=_entetes())
+            assert r3.status_code == 200
+            assert r3.json() == {"statut": "ok", "efface": 0}
+            # Le contexte est toujours là.
+            assert registre.dernier_valide() is not None
+
+    _courir(_t())
+
+
+def test_actif_false_legacy_sans_onglet_accepte_pour_depot_legacy():
+    """Compat : un dépôt legacy (sans onglet) reste effaçable sans onglet."""
     registre = RegistreContexte()
     app, _ = _app(registre=registre)
 
     async def _t():
         async with _client(app) as c:
             assert (await c.post(CHEMIN, json={"url": URL, "client_id": "abc"}, headers=_entetes())).status_code == 200
-            assert registre.dernier_valide() is not None
             r = await c.post(CHEMIN, json={"actif": False, "client_id": "abc"}, headers=_entetes())
-            assert r.status_code == 200
             assert r.json() == {"statut": "ok", "efface": 1}
             assert registre.dernier_valide() is None
 

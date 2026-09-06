@@ -187,9 +187,79 @@ def test_effacer_un_client_seul():
     reg.enregistrer(
         contexte_depuis_payload({"url": URL_VALIDE, "client_id": "b"}), maintenant=base
     )
+    # Dépôts legacy (sans onglet) : effacement legacy du même client accepté.
     assert reg.effacer("a") == 1
     dernier = reg.dernier_valide(ttl_s=300, maintenant=base)
     assert dernier is not None and dernier.client_id == "b"
+
+
+def test_effacer_onglet_tiers_refuse():
+    """RÈGLE ANTI-EFFACEMENT CROISÉ : un onglet tiers (page ChatGPT sans
+    conversation) ne peut PAS effacer le contexte déposé par un autre onglet
+    — cause racine du bug « contexte effacé en boucle »."""
+    reg = RegistreContexte()
+    base = _maintenant()
+    reg.enregistrer(
+        contexte_depuis_payload({"url": URL_VALIDE, "client_id": "chrome", "onglet_id": "tab42"}),
+        maintenant=base,
+    )
+    # Onglet différent (tab43) ou effacement sans identité : refusés.
+    assert reg.effacer("chrome", "tab43") == 0
+    assert reg.effacer("chrome") == 0
+    assert reg.dernier_valide(ttl_s=300, maintenant=base) is not None
+
+
+def test_effacer_onglet_proprietaire_accepte():
+    reg = RegistreContexte()
+    base = _maintenant()
+    reg.enregistrer(
+        contexte_depuis_payload({"url": URL_VALIDE, "client_id": "chrome", "onglet_id": "tab42"}),
+        maintenant=base,
+    )
+    assert reg.effacer("chrome", "tab42") == 1
+    assert reg.dernier_valide(ttl_s=300, maintenant=base) is None
+
+
+def test_effacer_onglet_sans_client_refuse():
+    reg = RegistreContexte()
+    base = _maintenant()
+    reg.enregistrer(
+        contexte_depuis_payload({"url": URL_VALIDE, "client_id": "chrome", "onglet_id": "tab42"}),
+        maintenant=base,
+    )
+    assert reg.effacer("autre-client", "tab42") == 0
+    assert reg.dernier_valide(ttl_s=300, maintenant=base) is not None
+
+
+def test_heartbeat_rafraichit_le_ttl():
+    """Un dépôt (heartbeat) régulier repousse l'expiration : à T+590 avec un
+    TTL de 300 s, le contexte est encore frais grâce au dépôt de T+290."""
+    reg = RegistreContexte()
+    base = _maintenant()
+    reg.enregistrer(
+        contexte_depuis_payload({"url": URL_VALIDE, "client_id": "chrome", "onglet_id": "tab42"}),
+        maintenant=base,
+    )
+    reg.enregistrer(
+        contexte_depuis_payload({"url": URL_VALIDE, "client_id": "chrome", "onglet_id": "tab42"}),
+        maintenant=base + timedelta(seconds=290),
+    )
+    assert reg.dernier_valide(ttl_s=300, maintenant=base + timedelta(seconds=590)) is not None
+
+
+def test_contexte_enregistre_porte_son_onglet():
+    c = contexte_depuis_payload(
+        {"url": URL_VALIDE, "client_id": "chrome", "onglet_id": "tab42"}
+    )
+    assert c.onglet_id == "tab42"
+    assert contexte_depuis_payload({"url": URL_VALIDE}).onglet_id == ""
+
+
+def test_onglet_id_invalide_ignore():
+    c = contexte_depuis_payload(
+        {"url": URL_VALIDE, "onglet_id": "tab:42 avec des espaces!!!"}
+    )
+    assert c.onglet_id == ""
 
 
 def test_effacer_tout():
@@ -209,7 +279,12 @@ def test_ttl_non_depasse_retourne():
 def test_etat_vide():
     reg = RegistreContexte()
     etat = reg.etat(ttl_s=300, maintenant=_maintenant())
-    assert etat == {"contexte_present": False, "age_s": None}
+    assert etat == {
+        "contexte_present": False,
+        "age_s": None,
+        "raison": "contexte_absent",
+        "dernier_depot_s": None,
+    }
 
 
 def test_etat_apres_depot_sans_fuite():
@@ -218,17 +293,40 @@ def test_etat_apres_depot_sans_fuite():
     reg.enregistrer(contexte_depuis_payload({"url": URL_VALIDE}), maintenant=base)
     etat = reg.etat(ttl_s=300, maintenant=base + timedelta(seconds=2))
     assert etat["contexte_present"] is True
+    assert etat["raison"] == "contexte_actif"
     assert 0 < etat["age_s"] <= 2.5
+    assert etat["dernier_depot_s"] == etat["age_s"]
     # Jamais d'URL/ID dans le diagnostic.
     assert "url" not in etat and "conversation_id" not in etat
 
 
 def test_etat_expire():
+    """Un contexte déposé puis expiré est rapporté « contexte_expire » (et non
+    absent) pendant la fenêtre de diagnostic : l'extension peut distinguer
+    « aucun contexte » de « contexte expiré »."""
     reg = RegistreContexte()
     base = _maintenant()
     reg.enregistrer(contexte_depuis_payload({"url": URL_VALIDE}), maintenant=base)
     etat = reg.etat(ttl_s=300, maintenant=base + timedelta(seconds=301))
-    assert etat == {"contexte_present": False, "age_s": None}
+    assert etat["contexte_present"] is False
+    assert etat["age_s"] is None
+    assert etat["raison"] == "contexte_expire"
+    assert etat["dernier_depot_s"] == 301.0
+
+
+def test_etat_absent_apres_longue_silence():
+    """Passé la fenêtre de diagnostic (2 × TTL), un vieux dépôt redevient
+    « contexte_absent » (plus rien d'exploitable)."""
+    reg = RegistreContexte()
+    base = _maintenant()
+    reg.enregistrer(contexte_depuis_payload({"url": URL_VALIDE}), maintenant=base)
+    etat = reg.etat(ttl_s=300, maintenant=base + timedelta(seconds=900))
+    assert etat == {
+        "contexte_present": False,
+        "age_s": None,
+        "raison": "contexte_absent",
+        "dernier_depot_s": 900.0,
+    }
 
 
 # --- bloc notes --------------------------------------------------------------

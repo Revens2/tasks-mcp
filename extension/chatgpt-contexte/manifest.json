@@ -2,8 +2,9 @@
   "manifest_version": 3,
   "name": "Contexte ChatGPT → Tasks MCP",
   "version": "1.0.0",
-  "description": "Publie l'URL de la conversation ChatGPT active vers votre Tasks MCP (rappels Apple) afin que les tâches créées contiennent un lien cliquable vers la conversation. Ne lit que l'URL et le titre — jamais le contenu des conversations.",
-  "permissions": ["storage"],
+  "description": "Publie l'URL de la conversation ChatGPT active vers votre Tasks MCP (rappels Apple) afin que les tâches créées contiennent un lien cliquable vers la conversation. Le contexte est rafraîchi (heartbeat) par l'onglet de la dernière conversation active, sans jamais lire le contenu des conversations.",
+  "version": "2.0.0",
+  "permissions": ["storage", "alarms"],
   "host_permissions": ["https://chatgpt.com/*"],
   "optional_host_permissions": [
     "https://tasks-mcp.duckdns.org/*",

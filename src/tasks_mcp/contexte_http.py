@@ -185,14 +185,21 @@ class ContexteEndpoint:
             return
 
         if methode == "GET":
-            # Diagnostic interne : présence + âge du contexte le plus récent.
-            # Jamais l'URL ni l'ID de conversation, aucun historique.
+            # Diagnostic interne : présence + âge + raison du contexte le plus
+            # récent. Jamais l'URL ni l'ID de conversation, aucun historique.
             etat = self.registre.etat(ttl_s=self.ttl_s)
             await self._repondre(
                 send,
                 200,
-                {"statut": "ok", "contexte_present": etat["contexte_present"],
-                 "age_s": etat["age_s"], "ttl_s": self.ttl_s},
+                {
+                    "statut": "ok",
+                    "contexte_present": etat["contexte_present"],
+                    "id_present": etat["contexte_present"],
+                    "age_s": etat["age_s"],
+                    "raison": etat["raison"],
+                    "dernier_depot_s": etat["dernier_depot_s"],
+                    "ttl_s": self.ttl_s,
+                },
             )
             return
 
@@ -203,8 +210,18 @@ class ContexteEndpoint:
             return
 
         if isinstance(payload, dict) and payload.get("actif") is False:
+            # Effacement SOUS CONDITION DE PROPRIÉTÉ : seul l'onglet qui a déposé
+            # le contexte peut l'effacer (onglet_id identique). Un onglet tiers
+            # (page ChatGPT sans conversation, accueil…) ne peut jamais effacer le
+            # contexte d'une conversation ouverte ailleurs — cause racine du bug
+            # « contexte effacé en boucle toutes les ~2 min ».
             client_id = payload.get("client_id")
-            retire = self.registre.effacer(client_id if isinstance(client_id, str) and client_id else None)
+            onglet_id = payload.get("onglet_id")
+            if not (isinstance(client_id, str) and client_id):
+                retire = 0
+            else:
+                oid = onglet_id if isinstance(onglet_id, str) and onglet_id else None
+                retire = self.registre.effacer(client_id, oid)
             await self._repondre(send, 200, {"statut": "ok", "efface": retire})
             return
 

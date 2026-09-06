@@ -48,7 +48,7 @@ function charger() {
     $("jeton").value = valeurs[CLE.jeton] || "";
     var statut = valeurs[CLE.statut];
     if (statut) {
-      var ligne = "Dernier envoi (heartbeat) : " + (statut.ok ? "réussi" : "échec");
+      var ligne = "Dernier envoi : " + (statut.ok ? "réussi" : "échec");
       if (statut.code) ligne += " (HTTP " + statut.code + ")";
       if (statut.raison) ligne += " — " + statut.raison;
       ligne += " à " + new Date(statut.a).toLocaleTimeString();
@@ -56,7 +56,66 @@ function charger() {
     } else {
       afficherStatut("Aucun envoi pour l'instant. Utilise les boutons de test ci-dessus.");
     }
+    vueEnsemble();
   });
+}
+
+/**
+ * Vue d'ensemble temps réel (mission : diagnostic sans lire de logs) :
+ * Serveur / Conversation active / Contexte / dernier envoi. Ne lit que le
+ * diagnostic serveur (GET, jamais d'URL/ID) et l'état local de propriété.
+ */
+async function vueEnsemble() {
+  var zone = $("vue");
+  if (!zone) return;
+  var config = await lireConfig();
+  var endpoint = (config[CLE.endpoint] || "").trim();
+  var jeton = (config[CLE.jeton] || "").trim();
+  if (!endpoint || !jeton) {
+    zone.textContent = "Enregistre d'abord endpoint et jeton pour voir l'état du pipeline.";
+    return;
+  }
+  var lignes = [];
+  var statut = (await chrome.storage.local.get(CLE.statut))[CLE.statut];
+  var g = await requeteJson("GET", endpoint, jeton);
+  if (g.erreur === "reseau") {
+    zone.textContent = "Serveur : 🔴 injoignable (réseau)\nLe pipeline ne peut pas être vérifié.";
+    return;
+  }
+  if (g.statut === 401) {
+    zone.textContent = "Serveur : 🔴 authentification refusée (401)\nJeton invalide ou tourné — relis-le dans ton terminal.";
+    return;
+  }
+  if (!g.ok) {
+    lignes.push("Serveur : 🟠 HTTP " + g.statut);
+  } else {
+    lignes.push("Serveur : 🟢 joignable");
+    var sess = await chrome.storage.session.get({ etatCerveau: null });
+    var proprietaire = sess.etatCerveau && sess.etatCerveau.proprietaire;
+    lignes.push(
+      proprietaire ? "Conversation : 🟢 active (/c/…) — heartbeat automatique" : "Conversation : 🟠 aucune conversation active"
+    );
+    var corps = g.corps || {};
+    if (corps.contexte_present) {
+      lignes.push("Contexte : 🟢 actif (âge " + Math.round(corps.age_s || 0) + " s)");
+    } else if (corps.raison === "contexte_expire") {
+      lignes.push(
+        "Contexte : 🟠 expiré (dernier dépôt il y a " +
+          Math.round(corps.dernier_depot_s || 0) +
+          " s)"
+      );
+    } else {
+      lignes.push("Contexte : ⚪ aucun contexte déposé");
+    }
+  }
+  if (statut && statut.a) {
+    var s = Math.max(0, Math.round((Date.now() - statut.a) / 1000));
+    lignes.push(
+      "Dernier envoi : il y a " + s + " s (" + (statut.ok ? "réussi" : "échec") +
+      (statut.raison ? " — " + statut.raison : "") + ")"
+    );
+  }
+  zone.textContent = lignes.join("\n");
 }
 
 function origineDe(url) {
@@ -252,6 +311,7 @@ async function testerConversation() {
     url: conv.url,
     title: titre || undefined,
     client_id: clientIdPersistant(conf.config),
+    onglet_id: "options",
   });
   if (r.erreur === "reseau") {
     afficherStatut("🔴 Impossible de joindre Tasks MCP (réseau) pendant l'envoi.", COULEURS.rouge);
@@ -305,7 +365,25 @@ async function testerConversation() {
   }
 }
 
-document.addEventListener("DOMContentLoaded", charger);
-$("enregistrer").addEventListener("click", enregistrer);
-$("tester-serveur").addEventListener("click", testerServeur);
-$("tester-conversation").addEventListener("click", testerConversation);
+function rafraichirVue() {
+  vueEnsemble().catch(function () {
+    /* silencieux : l'état s'affichera au prochain tick */
+  });
+}
+
+document.addEventListener("DOMContentLoaded", function () {
+  charger();
+  setInterval(rafraichirVue, 5000); // popup/options ouverte : indicateurs vivants
+});
+$("enregistrer").addEventListener("click", function () {
+  enregistrer();
+  setTimeout(rafraichirVue, 300);
+});
+$("tester-serveur").addEventListener("click", async function () {
+  await testerServeur();
+  rafraichirVue();
+});
+$("tester-conversation").addEventListener("click", async function () {
+  await testerConversation();
+  rafraichirVue();
+});
