@@ -24,6 +24,11 @@ class Config:
     trash_retention_days: int = 30
     upstream_port: int = 8791
     timeout_s: float = 30.0
+    # Contexte ChatGPT (endpoint POST /context/chatgpt) : jeton ultra-scopé et
+    # TTL du contexte. Jeton absent => endpoint inerte (503), aucune donnée
+    # reçue ; l'enrichissement des notes reste sans effet (aucun contexte).
+    contexte_token: str = ""
+    contexte_ttl_s: int = 300
     _verrou: object = field(default=None, repr=False, compare=False)
 
     @property
@@ -55,4 +60,6 @@ class Config:
             trash_retention_days=int(os.environ.get("TASKS_TRASH_RETENTION_DAYS", "30")),
             upstream_port=int(os.environ.get("TASKS_UPSTREAM_PORT", "8791")),
             timeout_s=float(os.environ.get("TASKS_CALDAV_TIMEOUT", "30")),
+            contexte_token=os.environ.get("TASKS_CONTEXT_TOKEN", "").strip(),
+            contexte_ttl_s=int(os.environ.get("TASKS_CONTEXT_TTL_S", "300")),
         )
