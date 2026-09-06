@@ -14,10 +14,10 @@ import pytest
 from tasks_mcp.contexte import (
     PayloadInvalide,
     RegistreContexte,
-    bloc_notes,
+    composer_notes_avec_contexte,
     contexte_depuis_payload,
+    normaliser_libelle,
     normaliser_titre,
-    notes_avec_contexte,
     valider_url,
 )
 
@@ -113,7 +113,22 @@ def test_payload_valide_avec_titre_et_client():
 def test_payload_sans_titre_ni_client():
     c = contexte_depuis_payload({"url": URL_VALIDE})
     assert c.titre is None
+    assert c.account_label is None
     assert c.client_id == "defaut"
+
+
+def test_payload_avec_libelle_compte():
+    c = contexte_depuis_payload(
+        {"url": URL_VALIDE, "account_label": "ChatGPT principal"}
+    )
+    assert c.account_label == "ChatGPT principal"
+
+
+def test_libelle_compte_normalise_et_borne():
+    assert normaliser_libelle("  ChatGPT\nsecondaire ") == "ChatGPT secondaire"
+    assert normaliser_libelle(None) is None
+    assert normaliser_libelle("   ") is None
+    assert len(normaliser_libelle("x" * 5000)) == 80
 
 
 def test_payload_non_dict_rejete():
@@ -329,31 +344,122 @@ def test_etat_absent_apres_longue_silence():
     }
 
 
-# --- bloc notes --------------------------------------------------------------
-
-def test_bloc_sans_titre():
-    c = contexte_depuis_payload({"url": URL_VALIDE})
-    assert bloc_notes(c) == f"Conversation ChatGPT :\n{URL_VALIDE}"
+# --- composition des notes (URL en tête + pied Source/Compte/Conversation) ----
 
 
-def test_bloc_avec_titre():
-    c = contexte_depuis_payload({"url": URL_VALIDE, "title": "Mon titre"})
-    assert bloc_notes(c) == f"Conversation ChatGPT :\nMon titre\n{URL_VALIDE}"
+def _contexte(**extra):
+    champ = {"url": URL_VALIDE}
+    champ.update(extra)
+    return contexte_depuis_payload(champ)
 
 
-def test_notes_ajoutees_sans_ecrasement():
-    c = contexte_depuis_payload({"url": URL_VALIDE, "title": "T"})
-    resultat = notes_avec_contexte("À regarder plus tard : vidéo", c)
-    assert "À regarder plus tard : vidéo" in resultat
-    assert resultat.endswith(f"---\nConversation ChatGPT :\nT\n{URL_VALIDE}")
+def test_notes_avec_contexte_url_en_premiere_ligne():
+    """Critère principal : l'URL est la première ligne des notes."""
+    c = _contexte(title="Compatibilité câble iPhone 15 Pro", account_label="ChatGPT principal")
+    resultat = composer_notes_avec_contexte("Acheter un câble USB-C adapté.", c)
+    assert resultat.startswith("https://chatgpt.com/c/")
+    assert resultat == (
+        f"{URL_VALIDE}\n\n"
+        "Acheter un câble USB-C adapté.\n\n"
+        "---\nSource : ChatGPT\nCompte : ChatGPT principal\n"
+        "Conversation : Compatibilité câble iPhone 15 Pro"
+    )
 
 
-def test_notes_absentes_bloc_seul():
-    c = contexte_depuis_payload({"url": URL_VALIDE})
-    assert notes_avec_contexte(None, c) == f"Conversation ChatGPT :\n{URL_VALIDE}"
+def test_notes_vides_avec_contexte():
+    c = _contexte(title="T", account_label="A")
+    assert composer_notes_avec_contexte(None, c) == (
+        f"{URL_VALIDE}\n\n---\nSource : ChatGPT\nCompte : A\nConversation : T"
+    )
 
 
-def test_pas_de_duplication_quand_url_deja_present():
-    c = contexte_depuis_payload({"url": URL_VALIDE})
-    notes = f"déjà noté\n\n---\nConversation ChatGPT :\n{URL_VALIDE}"
-    assert notes_avec_contexte(notes, c) == notes
+def test_titre_absent_ligne_conversation_omise():
+    c = _contexte(account_label="ChatGPT principal")
+    resultat = composer_notes_avec_contexte("description", c)
+    assert "Conversation :" not in resultat
+    assert "Compte : ChatGPT principal" in resultat
+    assert resultat.startswith(URL_VALIDE)
+
+
+def test_compte_absent_ligne_compte_omise():
+    c = _contexte(title="Mon titre")
+    resultat = composer_notes_avec_contexte("description", c)
+    assert "Compte :" not in resultat
+    assert "Conversation : Mon titre" in resultat
+    assert "Source : ChatGPT" in resultat
+
+
+def test_titre_et_compte_absents_pied_minimal():
+    c = _contexte()
+    resultat = composer_notes_avec_contexte("description", c)
+    assert resultat == f"{URL_VALIDE}\n\ndescription\n\n---\nSource : ChatGPT"
+
+
+def test_notes_originales_preservees_et_non_alterees():
+    c = _contexte(title="T")
+    description = "Ligne 1\n\nLigne 2 — avec ponctuation ! (parenthèses) [x]"
+    resultat = composer_notes_avec_contexte(description, c)
+    assert "Ligne 1" in resultat and "Ligne 2 — avec ponctuation ! (parenthèses) [x]" in resultat
+
+
+def test_unicode_accents_conserves_dans_titre_compte_et_notes():
+    c = _contexte(
+        title="Été : vérifier l'épaisseur du câble USB‑C 🔌",
+        account_label="Compte principal éèàçü",
+    )
+    resultat = composer_notes_avec_contexte("Ça marche déjà très bien : é à ô ü.", c)
+    assert "Été : vérifier l'épaisseur du câble USB‑C 🔌" in resultat
+    assert "Compte : Compte principal éèàçü" in resultat
+    assert "é à ô ü" in resultat
+
+
+def test_longue_description_conservee():
+    c = _contexte(title="T")
+    longue = "\n".join(f"Paragraphe {i} : " + "mots ".join(str(j) for j in range(20)) for i in range(50))
+    resultat = composer_notes_avec_contexte(longue, c)
+    assert resultat.startswith(URL_VALIDE)
+    assert "Paragraphe 49 :" in resultat
+
+
+def test_url_dupliquee_dans_les_notes_retiree_une_seule_occurrence():
+    """Pas de double URL (URL URL description) : l'URL n'apparaît qu'en tête."""
+    c = _contexte(title="T")
+    notes = f"déjà noté\n{URL_VALIDE}\nencore un peu"
+    resultat = composer_notes_avec_contexte(notes, c)
+    assert resultat.count(URL_VALIDE) == 1
+    assert resultat.startswith(URL_VALIDE + "\n\ndéjà noté")
+    assert resultat.endswith("encore un peu\n\n---\nSource : ChatGPT\nConversation : T")
+
+
+def test_ancien_format_legacy_retire_pas_de_doublon():
+    """Des notes portant l'ancien bloc (Conversation ChatGPT : … + URL) ne
+    produisent pas de double URL ni de reliquat du bloc legacy."""
+    c = _contexte(title="T")
+    legacy = f"description d'origine\n\n---\nConversation ChatGPT :\nMon ancien titre\n{URL_VALIDE}"
+    resultat = composer_notes_avec_contexte(legacy, c)
+    assert resultat.count(URL_VALIDE) == 1
+    assert "Conversation ChatGPT :" not in resultat
+    assert "Mon ancien titre" not in resultat
+    assert resultat.startswith(URL_VALIDE + "\n\ndescription d'origine")
+    assert "Conversation : T" in resultat
+
+
+def test_ancien_format_sans_separateur_retire():
+    c = _contexte(title="T")
+    legacy = f"description\n\nConversation ChatGPT :\n{URL_VALIDE}"
+    resultat = composer_notes_avec_contexte(legacy, c)
+    assert resultat.count(URL_VALIDE) == 1
+    assert "Conversation ChatGPT :" not in resultat
+    assert resultat.startswith(f"{URL_VALIDE}\n\ndescription")
+
+
+def test_url_d_une_autre_conversation_conservee():
+    """Seule l'URL DE CE contexte est dédupliquée ; un lien vers une autre
+    conversation présent dans les notes n'est pas touché."""
+    autre = "https://chatgpt.com/c/aaaaaaaa-1111-2222-3333-444444444444"
+    c = _contexte(title="T")
+    notes = f"Voir aussi {autre} pour l'autre sujet"
+    resultat = composer_notes_avec_contexte(notes, c)
+    assert resultat.count(URL_VALIDE) == 1
+    assert autre in resultat
+    assert resultat.startswith(URL_VALIDE)

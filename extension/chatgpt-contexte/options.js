@@ -17,7 +17,13 @@
  */
 "use strict";
 
-var CLE = { endpoint: "endpoint", jeton: "jeton", clientId: "clientId", statut: "dernierStatut" };
+var CLE = {
+  endpoint: "endpoint",
+  jeton: "jeton",
+  clientId: "clientId",
+  compte: "compteLabel",
+  statut: "dernierStatut",
+};
 var COULEURS = { vert: "#1a7f37", orange: "#b45309", rouge: "#b42318", neutre: "#444" };
 var Detect = (typeof globalThis !== "undefined" && globalThis.DetectChatGPT) || null;
 
@@ -32,7 +38,7 @@ function afficherStatut(message, couleur) {
 }
 
 function lireConfig() {
-  return chrome.storage.local.get([CLE.endpoint, CLE.jeton, CLE.clientId]);
+  return chrome.storage.local.get([CLE.endpoint, CLE.jeton, CLE.clientId, CLE.compte]);
 }
 
 function clientIdPersistant(config) {
@@ -43,9 +49,10 @@ function clientIdPersistant(config) {
 }
 
 function charger() {
-  chrome.storage.local.get([CLE.endpoint, CLE.jeton, CLE.statut]).then(function (valeurs) {
+  chrome.storage.local.get([CLE.endpoint, CLE.jeton, CLE.compte, CLE.statut]).then(function (valeurs) {
     $("endpoint").value = valeurs[CLE.endpoint] || "";
     $("jeton").value = valeurs[CLE.jeton] || "";
+    $("compte").value = valeurs[CLE.compte] || "";
     var statut = valeurs[CLE.statut];
     if (statut) {
       var ligne = "Dernier envoi : " + (statut.ok ? "réussi" : "échec");
@@ -142,6 +149,7 @@ async function garantirPermission(endpoint) {
 function enregistrer() {
   var endpoint = $("endpoint").value.trim();
   var jeton = $("jeton").value.trim();
+  var compte = $("compte").value.trim();
   if (!endpoint || !jeton) {
     afficherStatut("Endpoint et jeton sont requis.", COULEURS.rouge);
     return;
@@ -155,9 +163,11 @@ function enregistrer() {
       afficherStatut("Permission pour cet endpoint refusée : envois impossibles.", COULEURS.rouge);
       return;
     }
-    chrome.storage.local.set({ [CLE.endpoint]: endpoint, [CLE.jeton]: jeton }).then(function () {
-      afficherStatut("Configuration enregistrée.", COULEURS.vert);
-    });
+    chrome.storage.local
+      .set({ [CLE.endpoint]: endpoint, [CLE.jeton]: jeton, [CLE.compte]: compte })
+      .then(function () {
+        afficherStatut("Configuration enregistrée.", COULEURS.vert);
+      });
   });
 }
 
@@ -310,6 +320,7 @@ async function testerConversation() {
   var r = await requeteJson("POST", conf.endpoint, conf.jeton, {
     url: conv.url,
     title: titre || undefined,
+    account_label: (conf.config[CLE.compte] || "").trim() || undefined,
     client_id: clientIdPersistant(conf.config),
     onglet_id: "options",
   });

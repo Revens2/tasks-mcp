@@ -16,13 +16,16 @@ sudo -u tasks-app bash -c '
 '
 ```
 
-Résultat attendu : **140 passed** (intégration CalDAV réelle + unités MCP +
+Résultat attendu : **151 passed** (intégration CalDAV réelle + unités MCP +
 passerelle).
 
 - `tests/mcp/` — unités : modèle de temps (Europe/Paris), conversion iCalendar↔Tache,
-  contexte ChatGPT (validation URL/titre, registre TTL, bloc notes), endpoint HTTP
-  `/context/chatgpt` (jeton, taux, tailles, effacement), et lien `tasks_create`
-  ↔ contexte (frais/expiré/absent, préservation et non-duplication des notes).
+  contexte ChatGPT (validation URL/titre/libellé, registre TTL, onglet
+  propriétaire, composition des notes : URL en 1re ligne, pied
+  Source/Compte/Conversation, dédup de l'ancien format), endpoint HTTP
+  `/context/chatgpt` (jeton, taux, tailles, effacement conditionnel), et lien
+  `tasks_create` ↔ contexte (frais/expiré/absent, préservation et
+  non-duplication des notes).
 - `tests/integration/test_service_caldav.py` — cycle complet CalDAV réel
   (create/get/update/due/complete/reopen/move/soft-delete/restore/permanent),
   conflit ETag (If-Match, pas d'écrasement), détection de changement externe

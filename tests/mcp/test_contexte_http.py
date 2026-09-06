@@ -88,6 +88,30 @@ def test_post_valide_reponse_explicite_sans_echo_id():
     assert dernier.client_id == "abc"
 
 
+def test_post_accepte_libelle_compte_sans_le_loguer():
+    """account_label (non secret, config local extension) est stocké avec le
+    contexte ; il n'apparaît jamais dans la réponse ni dans le diagnostic."""
+    registre = RegistreContexte()
+    app, _ = _app(registre=registre)
+
+    async def _t():
+        async with _client(app) as c:
+            r = await c.post(
+                CHEMIN,
+                json={"url": URL, "account_label": "ChatGPT principal", "title": "T"},
+                headers=_entetes(),
+            )
+            assert r.status_code == 200
+            assert "account_label" not in r.json()
+
+    _courir(_t())
+    dernier = registre.dernier_valide(ttl_s=300)
+    assert dernier is not None
+    assert dernier.account_label == "ChatGPT principal"
+    etat = registre.etat(ttl_s=300)
+    assert "account_label" not in etat and "title" not in etat
+
+
 def test_post_valide_echo_id_en_debug_explicite():
     """En mode débogage explicite (echo_id), l'ID de conversation est renvoyé."""
     registre = RegistreContexte()
