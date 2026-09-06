@@ -13,7 +13,9 @@
 
   var HOTE = "chatgpt.com";
   var PREFIXE_CONVERSATION = "/c/";
-  var MOTIF_ID = /^[A-Za-z0-9_-]{1,100}$/;
+  // Longueur 8..100 (UUID réels = 36) : pas de regex UUID stricte (risque de
+  // faux négatifs), mais un segment trop court après /c/ est refusé.
+  var MOTIF_ID = /^[A-Za-z0-9_-]{8,100}$/;
   var TAILLE_MAX_TITRE = 200;
 
   /** URL https://chatgpt.com/c/<id> → {url, conversation_id}, sinon null. */

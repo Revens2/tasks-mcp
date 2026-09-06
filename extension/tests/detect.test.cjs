@@ -48,6 +48,14 @@ test("extrait en ignorant le slash final", () => {
   assert.equal(Detect.extraireConversation(CONV + "/").url, CONV);
 });
 
+test("ID de longueur minimale accepté (8), plus court refusé", () => {
+  const court = "a".repeat(8);
+  assert.equal(Detect.extraireConversation("https://chatgpt.com/c/" + court).conversation_id, court);
+  for (const tropCourt of ["abc", "a".repeat(7)]) {
+    assert.equal(Detect.extraireConversation("https://chatgpt.com/c/" + tropCourt), null);
+  }
+});
+
 test("rejette les URL hors conversation", () => {
   for (const mauvaise of [
     "https://chatgpt.com/",
