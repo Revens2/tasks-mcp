@@ -87,6 +87,12 @@ secrets hors Git. Aucun reverse proxy ni infra parallèle ajouté.
   pas d'historique de navigation. `tasks_create` ajoute aux notes
   `---\nConversation ChatGPT :\n<url>` (titre si dispo) quand un contexte est
   frais — best-effort, jamais d'échec ni de bloc en double, notes préservées.
+- Réponses explicites : un dépôt valide répond `conversation_detectee:true` /
+  `id_present:true` (l'ID n'est écho que si `TASKS_CONTEXT_ECHO_ID=1`, jamais
+  par défaut ni loggé) ; `GET /context/chatgpt` (même jeton) expose un
+  diagnostic interne `contexte_present`/`age_s` sans URL ni ID, pour distinguer
+  « serveur accessible » de « conversation détectée » dans le test de
+  l'extension.
 
 ### Modèle de tâche (normalisé, indépendant d'iCalendar)
 `id/uid, title, notes, status (needs_action/completed), completed, completed_at,

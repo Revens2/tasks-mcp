@@ -67,7 +67,36 @@ ssh vps-etude "sudo bash /srv/tasks/scripts/afficher-secret.sh contexte"
 3. **Jeton** : colle le jeton de l'étape 2.
 4. **Enregistrer** → Chrome demande la permission d'accéder à l'endpoint →
    **Autoriser** (une seule fois).
-5. **Tester la connexion** → « Connexion OK (HTTP 200) ».
+5. **Tester le serveur** → doit afficher 🟢 « Serveur accessible —
+   authentification valide » (transport + jeton uniquement).
+6. **Tester la conversation courante** (onglet ChatGPT visible sur
+   `chatgpt.com/c/…`) → doit afficher 🟢 « conversation détectée — ID présent —
+   contexte enregistré ».
+
+### Deux tests distincts — signification des états
+
+**« Tester le serveur »** vérifie seulement que l'endpoint répond et que le
+jeton est accepté (transport + authentification). Un 🟢 ici ne dit RIEN sur la
+détection d'une conversation.
+
+**« Tester la conversation courante »** vérifie le pipeline complet : onglet
+actif sur ChatGPT, URL `/c/<id>`, envoi de la VRAIE URL de l'onglet, puis
+confirmation du stockage côté serveur.
+
+| État affiché | Signification |
+|---|---|
+| 🟢 Serveur accessible — authentification valide | transport + jeton OK (test serveur) |
+| 🟢 conversation détectée — ID présent — contexte enregistré | pipeline complet vérifié (test conversation) |
+| 🟠 Serveur accessible — aucune conversation `/c/<id>` détectée dans l'onglet actif | serveur OK, mais la page ChatGPT ouverte n'est pas une conversation (accueil, `/share/…`, `/g/…`) — pas un problème réseau |
+| 🟠 l'onglet actif n'est pas ChatGPT | le test conversation n'a rien à vérifier sur cet onglet |
+| 🔴 Serveur accessible — authentification refusée (401) | jeton invalide ou tourné |
+| 🔴 Impossible de joindre Tasks MCP | problème réseau / endpoint injoignable |
+| 🔴 URL ChatGPT détectée mais format de conversation invalide (400) | l'ID après `/c/` ne passe pas la validation serveur |
+
+Le serveur ne renvoie l'ID de conversation dans sa réponse **que** si
+`TASKS_CONTEXT_ECHO_ID=1` (débogage) ; par défaut la réponse d'un dépôt valide
+est `{"statut": "ok", "conversation_detectee": true, "id_present": true,
+"ttl_s": …}` — l'ID reste local à l'extension.
 
 ### 4. Vérification réelle
 
@@ -147,8 +176,23 @@ Saisis ensuite ce jeton dans les options de l'extension.
 |---|---|
 | `TASKS_CONTEXT_TOKEN` | jeton Bearer « browser context writer » (absent → endpoint inerte 503) |
 | `TASKS_CONTEXT_TTL_S` | durée de validité d'un contexte, secondes (défaut 300) |
+| `TASKS_CONTEXT_ECHO_ID` | `1` = renvoyer `conversation_id` dans la réponse du dépôt (débogage local uniquement ; défaut 0, jamais loggé) |
 
 `.env.example` ne contient que des placeholders (documentation).
+
+### Réponses de l'endpoint `/context/chatgpt`
+
+- `POST` avec URL de conversation valide → `200` : `{"statut": "ok",
+  "conversation_detectee": true, "id_present": true, "ttl_s": 300}`
+  (+ `conversation_id` seulement si `TASKS_CONTEXT_ECHO_ID=1`).
+- `POST` `{"actif": false}` → `200` : `{"statut": "ok", "efface": n}`
+  (utilisé par le bouton « Tester le serveur » et à la sortie d'une conversation).
+- `GET` (même jeton) → diagnostic interne `{"statut": "ok",
+  "contexte_present": bool, "age_s": nombre|null, "ttl_s": 300}` — ne
+  renvoie jamais l'URL ni l'ID de conversation, aucun historique.
+- Erreurs : `400` (URL invalide, ex. `/share/`, autre hôte, ID trop court),
+  `401` (jeton), `405` (méthode), `413` (corps), `415` (type), `429` (trop de
+  requêtes), `503` (endpoint non configuré).
 
 ## Test manuel
 
