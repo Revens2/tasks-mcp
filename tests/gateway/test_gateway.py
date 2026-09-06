@@ -27,7 +27,7 @@ import httpx
 import pytest
 import uvicorn
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from tasks_gateway.app import construire_application
@@ -264,17 +264,27 @@ def _serveur_stub(outils: list[str] | None = None) -> tuple[uvicorn.Server, str,
     recus: list[dict] = []
 
     async def _post(request):
+        def _reponse(donnees, session):
+            """Repond en SSE (comme l'upstream reel 2.6.3) quand le client ne demande
+            que text/event-stream, sinon en JSON nu."""
+            accept = request.headers.get("accept", "")
+            if "text/event-stream" in accept and "application/json" not in accept:
+                corps = "event: message\ndata: " + json.dumps(donnees, ensure_ascii=False) + "\n\n"
+                return Response(corps, media_type="text/event-stream", headers={"mcp-session-id": session})
+            return JSONResponse(donnees, headers={"mcp-session-id": session})
+
         corps = await request.body()
         donnees = json.loads(corps)
         methode = donnees.get("method")
         id_ = donnees.get("id")
+        session = request.headers.get("mcp-session-id", "")
         if methode == "initialize":
-            return JSONResponse(
+            return _reponse(
                 {"jsonrpc": "2.0", "id": id_, "result": {"protocolVersion": "2025-06-18", "capabilities": {}, "serverInfo": {"name": "tasks-mcp", "version": "test"}}},
-                headers={"mcp-session-id": str(uuid.uuid4())},
+                str(uuid.uuid4()),
             )
         if methode == "tools/list":
-            return JSONResponse(
+            return _reponse(
                 {
                     "jsonrpc": "2.0",
                     "id": id_,
@@ -284,19 +294,16 @@ def _serveur_stub(outils: list[str] | None = None) -> tuple[uvicorn.Server, str,
                         ]
                     },
                 },
-                headers={"mcp-session-id": request.headers.get("mcp-session-id", "")},
+                session,
             )
         if methode == "tools/call":
             params = donnees.get("params") or {}
             recus.append({"name": params.get("name"), "id": id_})
-            return JSONResponse(
+            return _reponse(
                 {"jsonrpc": "2.0", "id": id_, "result": {"content": [{"type": "text", "text": "ok"}]}},
-                headers={"mcp-session-id": request.headers.get("mcp-session-id", "")},
+                session,
             )
-        return JSONResponse(
-            {"jsonrpc": "2.0", "id": id_, "result": {}},
-            headers={"mcp-session-id": request.headers.get("mcp-session-id", "")},
-        )
+        return _reponse({"jsonrpc": "2.0", "id": id_, "result": {}}, session)
 
     app = Starlette(routes=[Route("/mcp", _post, methods=["POST"])])
     socket_ecoute = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -396,6 +403,44 @@ def test_lecture_seul_refuse_toute_mutation(environ, outil):
                 assert corps["error"]["code"] == -32000
                 assert "ecriture" in corps["error"]["message"] or "interdit" in corps["error"]["message"]
                 assert recus == [], f"l'upstream a recu un appel interdit: {recus}"
+        finally:
+            serveur.should_exit = True
+            if _socket_ecoute:
+                _socket_ecoute.close()
+
+    _courir(_t())
+
+
+def _reponse_json_rpc(r: httpx.Response) -> dict:
+    """Parse une reponse MCP : JSON nu ou enveloppe SSE."""
+    if "text/event-stream" in r.headers.get("content-type", ""):
+        blocs = [
+            ligne[len("data: "):]
+            for ligne in r.text.splitlines()
+            if ligne.startswith("data: ")
+        ]
+        return json.loads("".join(blocs))
+    return r.json()
+
+
+def test_lecture_seul_liste_filtre_aussi_en_sse(environ):
+    """Le filtre tools/list s'applique aussi quand l'upstream repond en SSE
+    (comportement reel de l'upstream v2.6.3)."""
+
+    async def _t():
+        serveur, url, _socket_ecoute, recus = _serveur_stub()
+        try:
+            os.environ["TASKS_MCP_UPSTREAM"] = url
+            async with _client(JETON_LECTURE, SCOPES_LECTURE) as c:
+                entetes = _entetes_autorises(JETON_LECTURE)
+                r = await c.post("/mcp", content=_json_rpc("initialize", 1), headers=entetes)
+                session = r.headers["mcp-session-id"]
+                entetes_sse = {**entetes, "Accept": "text/event-stream", "mcp-session-id": session}
+                r = await c.post("/mcp", content=_json_rpc("tools/list", 2), headers=entetes_sse)
+                assert r.status_code == 200
+                assert "text/event-stream" in r.headers.get("content-type", "")
+                noms = {t["name"] for t in _reponse_json_rpc(r)["result"]["tools"]}
+                assert noms == set(OUTILS_LECTURE), noms
         finally:
             serveur.should_exit = True
             if _socket_ecoute:
