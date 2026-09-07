@@ -167,10 +167,20 @@ class ProxyMCP:
 
     def _http(self) -> httpx.AsyncClient:
         if self._client is None:
-            # Timeouts longs : une session SSE GET reste ouverte plusieurs heures.
+            # Constat du 2026-09-07 (mission contention CPU -> 502 Tasks) : avec
+            # max_connections=50, le pool de la passerelle s'est retrouve entierement
+            # occupe par des sessions SSE GET /mcp longue duree (50 connexions etablies
+            # conservees, fd du processus satures) ; chaque nouveau relais attendait
+            # alors un creneau avec pool_timeout=3600 s -> nginx rendait 504 apres 1 h,
+            # et les relais en course sur des connexions fermees rendaient 502.
+            # Corrections : capacite large (300) pour encaisser les salves de sessions
+            # du connecteur, attente de creneau bornee (30 s) pour echouer vite et de
+            # facon explicite (PoolTimeout journalise) au lieu de stall silencieusement.
+            # Read/connect inchanges : 3600 s pour une session SSE legitime, 5 s au
+            # connect. Les echecs sont desormais journalises (classe + duree + methode).
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(3600.0, connect=5.0),
-                limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+                timeout=httpx.Timeout(3600.0, connect=5.0, pool=30.0),
+                limits=httpx.Limits(max_connections=300, max_keepalive_connections=50),
             )
         return self._client
 
