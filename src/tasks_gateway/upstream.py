@@ -104,7 +104,17 @@ def _entetes(scope: Scope) -> dict[str, str]:
     for cle, valeur in scope.get("headers", []):
         nom = cle.decode("latin-1").lower()
         if nom in _ENTETES_REQUETE:
-            resultat[nom] = valeur.decode("latin-1")
+            val = valeur.decode("latin-1")
+            # ChatGPT (openai-mcp 1.0 + SDK 2.2.0) annonce 2026-07-28 mais envoie
+            # le corps handshake historique (sans _meta io.modelcontextprotocol/*).
+            # Le manager SDK rejete alors tout POST en 400 envelope. On
+            # rabaisse l'ere en 2025-11-25 (handshake le plus recent) cote
+            # upstream : le corps historique devient a nouveau valide, sans
+            # toucher au protocole vu par ChatGPT (reponse garde sa
+            # protocolVersion d'origine).
+            if nom == "mcp-protocol-version" and val.strip() == "2026-07-28":
+                val = "2025-11-25"
+            resultat[nom] = val
     return resultat
 
 

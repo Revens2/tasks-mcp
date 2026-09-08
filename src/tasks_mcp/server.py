@@ -27,7 +27,7 @@ journal = logging.getLogger("tasks_mcp")
 
 
 def construire(config: Config | None = None) -> tuple[Service, object]:
-    """Construit le service + l'application FastMCP (testable sans uvicorn)."""
+    """Construit le service + l'application MCPServer (testable sans uvicorn)."""
     config = config or Config.charger()
     config.data_dir.mkdir(parents=True, exist_ok=True)
     caldav = CalDAV(
@@ -39,9 +39,9 @@ def construire(config: Config | None = None) -> tuple[Service, object]:
     magasin = Magasin(config.fichier_db)
     service = Service(caldav, magasin, config)
 
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         "tasks",
         instructions=(
             "Serveur de tâches/rappels connecté à votre compte Apple Rappels (CalDAV "
@@ -65,12 +65,13 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 - la purge ne doit pas empêcher le démarrage
         journal.warning("purge de la corbeille impossible au démarrage : %s", exc)
 
-    # streamable_http_app() construit l'application ASGI (sans argument dans ce SDK) ;
+    # 2026-09-08 stateless_http=True : ChatGPT stateless (sans mcp-session-id) + 2026-07-28
+    # stateless_http_app() construit l'application ASGI (sans argument dans ce SDK) ;
     # ActeurMiddleware l'enveloppe pour propager l'acteur depuis l'en-tête interne.
     # L'endpoint /context/chatgpt est servi par ce même processus (registre
     # mémoire partagé avec tasks_create) mais ne passe jamais par la passerelle :
     # il est enveloppé à l'extérieur, avant tout middleware MCP.
-    mcp_app = ActeurMiddleware(mcp.streamable_http_app())
+    mcp_app = ActeurMiddleware(mcp.streamable_http_app(stateless_http=True))
     application = envelopper_application(
         mcp_app,
         ContexteEndpoint(
