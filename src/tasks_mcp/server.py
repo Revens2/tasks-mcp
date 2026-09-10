@@ -92,6 +92,8 @@ def main() -> None:
         host="127.0.0.1",
         port=config.upstream_port,
         log_level=os.environ.get("TASKS_LOG_LEVEL", "info").lower(),
+        # arrêt borné (flux SSE stateless ouverts) : restart/rollback en secondes, pas 90 s
+        timeout_graceful_shutdown=5,
     )
 
 

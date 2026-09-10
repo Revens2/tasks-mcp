@@ -7,16 +7,23 @@ seul point d'entree depuis l'exterieur. L'upstream tasks-mcp n'est joint qu'en
 
 from __future__ import annotations
 
-import os
-
 import uvicorn
 
-from tasks_gateway.app import PORT_PAR_DEFAUT, _config, construire_application
+from tasks_gateway.app import _config, construire_application
 
 
 def main() -> None:
     _, _, port, _, _ = _config()
-    uvicorn.run(construire_application(), host="127.0.0.1", port=port, log_level="info")
+    # Arret borne : sans limite, uvicorn attend la fin des flux SSE GET /mcp relayes
+    # (jusqu'a 3600 s) et systemd ne tue qu'apres TimeoutStopSec (90 s) -> restart ou
+    # rollback bloques ~90 s avec 502 cote nginx (constate en repetition 2026-09-10).
+    uvicorn.run(
+        construire_application(),
+        host="127.0.0.1",
+        port=port,
+        log_level="info",
+        timeout_graceful_shutdown=5,
+    )
 
 
 if __name__ == "__main__":
