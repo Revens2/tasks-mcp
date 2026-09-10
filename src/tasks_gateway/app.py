@@ -17,7 +17,7 @@ import os
 
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend, RequireAuthMiddleware
 from mcp.server.auth.provider import ProviderTokenVerifier
-from mcp.server.auth.routes import create_auth_routes, create_protected_resource_routes
+from mcp.server.auth.routes import build_resource_metadata_url, create_auth_routes, create_protected_resource_routes
 from mcp.server.auth.settings import ClientRegistrationOptions
 from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
@@ -92,6 +92,8 @@ def construire_application(
     )
     proxy = ProxyMCP(upstream, politique=POLITIQUE)
 
+    # Spec strict: resource = https://mcp.example.org/{service}/mcp, issuer = https://mcp.example.org/oauth/{service}
+    resource_url_str = emetteur.replace("/oauth", "") + CHEMIN_MCP if "/oauth" in emetteur else f"{emetteur}{CHEMIN_MCP}"
     routes: list[Route] = [
         *create_auth_routes(
             fournisseur,
@@ -103,7 +105,7 @@ def construire_application(
             ),
         ),
         *create_protected_resource_routes(
-            resource_url=AnyHttpUrl(f"{emetteur}{CHEMIN_MCP}"),
+            resource_url=AnyHttpUrl(resource_url_str),
             authorization_servers=[AnyHttpUrl(emetteur)],
             scopes_supported=PORTEES,
             resource_name="tâches et rappels MCP (passerelle CalDAV)",
@@ -115,7 +117,7 @@ def construire_application(
             endpoint=RequireAuthMiddleware(
                 proxy,
                 required_scopes=[PORTEE],
-                resource_metadata_url=AnyHttpUrl(f"{emetteur}{CHEMIN_MCP}"),
+                resource_metadata_url=build_resource_metadata_url(AnyHttpUrl(resource_url_str)),
             ),
             methods=["GET", "POST", "DELETE", "OPTIONS"],
         ),

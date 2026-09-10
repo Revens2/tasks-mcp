@@ -29,6 +29,9 @@ class Config:
     # reçue ; l'enrichissement des notes reste sans effet (aucun contexte).
     contexte_token: str = ""
     contexte_ttl_s: int = 300
+    # Diagnostic : renvoyer l'ID de conversation dans la réponse POST
+    # (réservé au débogage local ; jamais par défaut, jamais loggé).
+    contexte_echo_id: bool = False
     _verrou: object = field(default=None, repr=False, compare=False)
 
     @property
@@ -62,4 +65,6 @@ class Config:
             timeout_s=float(os.environ.get("TASKS_CALDAV_TIMEOUT", "30")),
             contexte_token=os.environ.get("TASKS_CONTEXT_TOKEN", "").strip(),
             contexte_ttl_s=int(os.environ.get("TASKS_CONTEXT_TTL_S", "300")),
+            contexte_echo_id=os.environ.get("TASKS_CONTEXT_ECHO_ID", "").strip().lower()
+            in ("1", "true", "oui", "yes"),
         )

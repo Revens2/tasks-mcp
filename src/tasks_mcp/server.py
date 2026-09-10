@@ -27,7 +27,7 @@ journal = logging.getLogger("tasks_mcp")
 
 
 def construire(config: Config | None = None) -> tuple[Service, object]:
-    """Construit le service + l'application FastMCP (testable sans uvicorn)."""
+    """Construit le service + l'application MCPServer (testable sans uvicorn)."""
     config = config or Config.charger()
     config.data_dir.mkdir(parents=True, exist_ok=True)
     caldav = CalDAV(
@@ -39,10 +39,16 @@ def construire(config: Config | None = None) -> tuple[Service, object]:
     magasin = Magasin(config.fichier_db)
     service = Service(caldav, magasin, config)
 
-    from mcp.server.fastmcp import FastMCP
+    from importlib.metadata import version as version_paquet
 
-    mcp = FastMCP(
+    from mcp.server.mcpserver import MCPServer
+
+    # serverInfo.version : FastMCP (SDK 1.x) annonçait la version du SDK ("1.29.0") ;
+    # MCPServer (SDK 2.x) annonce "" par défaut — régression de contrat constatée par
+    # capture différentielle (2026-09-10). On conserve la sémantique v1 : version du SDK.
+    mcp = MCPServer(
         "tasks",
+        version=version_paquet("mcp"),
         instructions=(
             "Serveur de tâches/rappels connecté à votre compte Apple Rappels (CalDAV "
             "Radicale, liste principale Inbox). Conventions : échéances en Europe/Paris ; "
@@ -65,18 +71,20 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001 - la purge ne doit pas empêcher le démarrage
         journal.warning("purge de la corbeille impossible au démarrage : %s", exc)
 
-    # streamable_http_app() construit l'application ASGI (sans argument dans ce SDK) ;
+    # 2026-09-08 stateless_http=True : ChatGPT stateless (sans mcp-session-id) + 2026-07-28
+    # stateless_http_app() construit l'application ASGI (sans argument dans ce SDK) ;
     # ActeurMiddleware l'enveloppe pour propager l'acteur depuis l'en-tête interne.
     # L'endpoint /context/chatgpt est servi par ce même processus (registre
     # mémoire partagé avec tasks_create) mais ne passe jamais par la passerelle :
     # il est enveloppé à l'extérieur, avant tout middleware MCP.
-    mcp_app = ActeurMiddleware(mcp.streamable_http_app())
+    mcp_app = ActeurMiddleware(mcp.streamable_http_app(stateless_http=True))
     application = envelopper_application(
         mcp_app,
         ContexteEndpoint(
             jeton=config.contexte_token,
             ttl_s=config.contexte_ttl_s,
             registre=service.contexte_registre,
+            echo_id=config.contexte_echo_id,
         ),
     )
     uvicorn.run(
@@ -84,6 +92,8 @@ def main() -> None:
         host="127.0.0.1",
         port=config.upstream_port,
         log_level=os.environ.get("TASKS_LOG_LEVEL", "info").lower(),
+        # arrêt borné (flux SSE stateless ouverts) : restart/rollback en secondes, pas 90 s
+        timeout_graceful_shutdown=5,
     )
 
 

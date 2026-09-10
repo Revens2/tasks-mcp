@@ -51,7 +51,7 @@ _GABARIT = """<!doctype html>
 Saisissez votre phrase de passe pour autoriser cette connexion.</p>
 <ul class="droits">{droits}</ul>
 {erreur}
-<form method="post" action="/consentement">
+<form method="post" action="consentement">
   <input type="hidden" name="demande" value="{demande}">
   <input type="password" name="phrase" placeholder="Phrase de passe" autofocus
          autocomplete="current-password" required>

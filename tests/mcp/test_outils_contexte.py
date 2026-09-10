@@ -1,6 +1,6 @@
 """Tests du lien `tasks_create` ↔ contexte ChatGPT récent.
 
-Vérifie au niveau de l'outil réel (enregistré sur une instance FastMCP) que :
+Vérifie au niveau de l'outil réel (enregistré sur une instance MCPServer) que :
 - avec un contexte récent et valide, les notes finales commencent par l'URL de
   la conversation (PREMIÈRE ligne) puis décrivent Source/Compte/Conversation ;
 - sans contexte (ou contexte expiré) la tâche est créée normalement, notes
@@ -16,7 +16,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from tasks_mcp.contexte import RegistreContexte, contexte_depuis_payload
 from tasks_mcp.model import Tache
@@ -63,7 +63,7 @@ def _service_avec_contexte(
     return service
 
 
-def _appeler(mcp: FastMCP, nom: str, arguments: dict) -> dict:
+def _appeler(mcp: MCPServer, nom: str, arguments: dict) -> dict:
     """Appelle un outil et ramène son dict de résultat.
 
     Le SDK enveloppe le dict renvoyé par l'outil dans du contenu texte JSON :
@@ -74,12 +74,15 @@ def _appeler(mcp: FastMCP, nom: str, arguments: dict) -> dict:
     brut = asyncio.run(mcp.call_tool(nom, arguments))
     if isinstance(brut, dict):
         return brut
-    texte = "".join(getattr(morceau, "text", "") for morceau in brut)
+    # SDK v2 : CallToolResult (plus une liste de morceaux) ; le dict renvoye
+    # par l'outil est enveloppe en contenu texte JSON.
+    contenu = getattr(brut, "content", brut)
+    texte = "".join(getattr(morceau, "text", "") for morceau in contenu)
     return json.loads(texte)
 
 
 def _creer(service, notes="notes") -> dict:
-    mcp = FastMCP("test-contexte", log_level="ERROR")
+    mcp = MCPServer("test-contexte", log_level="ERROR")
     enregistrer(mcp, service)
     return _appeler(mcp, "tasks_create", {"title": "Tâche de test", "notes": notes})
 
@@ -119,7 +122,7 @@ def test_contexte_expire_non_ajoute() -> None:
 
 def test_sans_notes_le_texte_est_url_plus_pied() -> None:
     service = _service_avec_contexte(vu_il_y_a_s=5)
-    mcp = FastMCP("test-contexte", log_level="ERROR")
+    mcp = MCPServer("test-contexte", log_level="ERROR")
     enregistrer(mcp, service)
     _appeler(mcp, "tasks_create", {"title": "Tâche"})
     assert service.notes_capturees == f"{URL}\n\n---\nSource : ChatGPT\nConversation : Ma conversation"
@@ -128,7 +131,7 @@ def test_sans_notes_le_texte_est_url_plus_pied() -> None:
 def test_notes_existantes_preservees() -> None:
     service = _service_avec_contexte(vu_il_y_a_s=5, titre="T")
     notes = "Ligne 1\nLigne 2"
-    mcp = FastMCP("test-contexte", log_level="ERROR")
+    mcp = MCPServer("test-contexte", log_level="ERROR")
     enregistrer(mcp, service)
     _appeler(mcp, "tasks_create", {"title": "Tâche", "notes": notes})
     assert service.notes_capturees == f"{URL}\n\nLigne 1\nLigne 2\n\n---\nSource : ChatGPT\nConversation : T"
@@ -139,7 +142,7 @@ def test_pas_de_duplication_du_bloc() -> None:
     URL (en tête), aucun reliquat de l'ancien format."""
     service = _service_avec_contexte(vu_il_y_a_s=5, titre="Nouveau titre")
     notes_deja = f"déjà noté\n\n---\nConversation ChatGPT :\n{URL}"
-    mcp = FastMCP("test-contexte", log_level="ERROR")
+    mcp = MCPServer("test-contexte", log_level="ERROR")
     enregistrer(mcp, service)
     _appeler(mcp, "tasks_create", {"title": "Tâche", "notes": notes_deja})
     assert service.notes_capturees.count(URL) == 1
