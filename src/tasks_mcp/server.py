@@ -39,10 +39,16 @@ def construire(config: Config | None = None) -> tuple[Service, object]:
     magasin = Magasin(config.fichier_db)
     service = Service(caldav, magasin, config)
 
+    from importlib.metadata import version as version_paquet
+
     from mcp.server.mcpserver import MCPServer
 
+    # serverInfo.version : FastMCP (SDK 1.x) annonçait la version du SDK ("1.29.0") ;
+    # MCPServer (SDK 2.x) annonce "" par défaut — régression de contrat constatée par
+    # capture différentielle (2026-09-10). On conserve la sémantique v1 : version du SDK.
     mcp = MCPServer(
         "tasks",
+        version=version_paquet("mcp"),
         instructions=(
             "Serveur de tâches/rappels connecté à votre compte Apple Rappels (CalDAV "
             "Radicale, liste principale Inbox). Conventions : échéances en Europe/Paris ; "
