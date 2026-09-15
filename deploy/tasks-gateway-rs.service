@@ -1,0 +1,43 @@
+[Unit]
+Description=Tasks MCP facade Rust (canary, loopback 18992)
+After=network-online.target tasks-gateway.service
+Wants=network-online.target
+
+[Service]
+# Canary : ne touche JAMAIS au service prod tasks-gateway.service.
+# Bascule atomique GATEE (OAuth JWT meme famille + rotation = exploitant).
+User=tasks-app
+Group=tasks-app
+WorkingDirectory=/opt/tasks-gateway-rs
+Environment=TASKS_MCP_RS_ISSUER=https://mymcps.duckdns.org/oauth/tasks
+Environment=TASKS_MCP_RS_UPSTREAM=http://127.0.0.1:8791
+Environment=TASKS_MCP_RS_PORT=18992
+Environment=TASKS_MCP_RS_TOKEN_FILE=/opt/tasks-gateway-rs/.mcp_token
+Environment="TASKS_MCP_RS_TOKEN_SCOPES=tasks:lecture tasks:ecriture"
+ExecStart=/opt/tasks-gateway-rs/tasks-gateway-rs
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/tasks-gateway-rs
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
